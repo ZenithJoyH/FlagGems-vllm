@@ -56,6 +56,38 @@ attention_bwd:
       - 2
       - 3
       - 4
+
+mhc_pre_clamp_sinkhorn_gemm:
+  - META:
+      BLOCK_M: 16
+      BLOCK_N: 32
+      BLOCK_K: 32
+    num_warps: 4
+    num_stages: 2
+  - META:
+      BLOCK_M: 16
+      BLOCK_N: 32
+      BLOCK_K: 64
+    num_warps: 4
+    num_stages: 3
+  - META:
+      BLOCK_M: 32
+      BLOCK_N: 32
+      BLOCK_K: 32
+    num_warps: 4
+    num_stages: 2
+
+mhc_pre_clamp_sinkhorn_epilogue:
+  - META:
+      BLOCK_H: 256
+    num_warps: 4
+  - META:
+      BLOCK_H: 512
+    num_warps: 8
+  - META:
+      BLOCK_H: 1024
+    num_warps: 8
+
 cross_entropy_loss:
   - META:
       BLOCK_C: 256

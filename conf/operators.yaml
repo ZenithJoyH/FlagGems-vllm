@@ -593,6 +593,18 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+  - id: mhc_pre_clamp_sinkhorn
+    description: Triton implementation of the clamp-based mHC Pre operator.
+    for:
+      - flaggems_vllm.mhc_pre_clamp_sinkhorn
+    labels:
+      - fused
+      - vLLM
+      - DSA
+    kind:
+      - NeuralNetwork
+    stages:
+      - beta: '5.3'
   - id: moe_align_block_size_triton
     description: |
       Aligns the token distribution across experts to be compatible with block size

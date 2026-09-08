@@ -77,6 +77,7 @@ from flaggems_vllm.ops.mhc import (
     mhc_bwd_ref,
     mhc_post,
     mhc_pre,
+    mhc_pre_clamp_sinkhorn,
     sinkhorn_forward,
 )
 from flaggems_vllm.ops.qwen4 import (
@@ -196,6 +197,7 @@ __all__ = [
     "mhc_bwd_ref",
     "mhc_post",
     "mhc_pre",
+    "mhc_pre_clamp_sinkhorn",
     "moe_align_block_size",
     "moe_align_block_size_triton",
     "moe_sum",
