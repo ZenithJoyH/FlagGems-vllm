@@ -202,6 +202,38 @@ def get_default_config(
       uniform 16/256/32 by ~3% on M<=128; a BM=8 gemm1 measured ~20%
       faster but is incorrect (MMA m16 constraint), so it is not used.)
     """
+    if dtype == "int8_w8a8":
+        tokens_per_expert = M // max(E, 1)
+        if tokens_per_expert <= 2:
+            block_m = 16
+        elif tokens_per_expert <= 4:
+            block_m = 32
+        elif tokens_per_expert <= 16:
+            block_m = 64
+        else:
+            block_m = 128
+
+        if N >= 4096:
+            block_n = 128 if M <= 128 else 256
+        else:
+            block_n = 64 if M <= 64 else 128
+        block_k = 128 if M <= 64 else 64
+        if tokens_per_expert > 128:
+            group_m = 16
+        elif tokens_per_expert > 32:
+            group_m = 8
+        else:
+            group_m = 1
+        return {
+            "BLOCK_SIZE_M": block_m,
+            "BLOCK_SIZE_N": block_n,
+            "BLOCK_SIZE_K": block_k,
+            "GROUP_SIZE_M": group_m,
+            "num_warps": 4,
+            "num_stages": 3,
+            "USE_INT32_OFFSETS": False,
+        }
+
     if M > 1024:
         bm, bn, bk = 64, 256, 32
     elif M > 512:
@@ -232,12 +264,15 @@ def _get_config_dtype_str(
     dtype: Optional[torch.dtype] = None,
     use_fp8_w8a8: bool = False,
     use_fp8_w8a16: bool = False,
+    use_int8_w8a8: bool = False,
     use_int8_w8a16: bool = False,
     use_int4_w4a16: bool = False,
     ocp_mx_scheme: str | None = None,
 ) -> str | None:
     """Return dtype string for kernel config lookup."""
-    if use_int8_w8a16:
+    if use_int8_w8a8:
+        return "int8_w8a8"
+    elif use_int8_w8a16:
         return "int8_w8a16"
     elif use_int4_w4a16:
         return "int4_w4a16"
@@ -1692,6 +1727,7 @@ def fused_experts_impl(
 
     config_dtype = _get_config_dtype_str(
         use_fp8_w8a8=use_fp8_w8a8,
+        use_int8_w8a8=use_int8_w8a8,
         use_int8_w8a16=use_int8_w8a16,
         use_int4_w4a16=use_int4_w4a16,
         ocp_mx_scheme=ocp_mx_scheme,
