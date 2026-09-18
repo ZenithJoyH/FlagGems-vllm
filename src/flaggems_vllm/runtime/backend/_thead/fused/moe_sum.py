@@ -19,6 +19,9 @@ import triton
 import triton.language as tl
 
 from flaggems_vllm import runtime
+from flaggems_vllm.ops.moe_sum import (
+    _moe_sum_general_kernel as _generic_moe_sum_kernel,
+)
 from flaggems_vllm.utils import libentry, libtuner
 
 logger = logging.getLogger(__name__)
@@ -420,6 +423,38 @@ def moe_sum(
         IDENTITY_MAP=src2dst is None,
         ELEM_SIZE=elem_size,
     )
+
+    if (
+        input.dtype == torch.bfloat16
+        and topk == 8
+        and hidden_size == 6144
+        and contiguous
+        and router_weights is None
+        and skip is None
+        and bias is None
+        and src2dst is None
+        and expert is None
+    ):
+        block_size, num_warps = (
+            (256, 4) if num_tokens <= 512 else (512, 8)
+        )
+        grid = (num_tokens, triton.cdiv(hidden_size, block_size))
+        _generic_moe_sum_kernel.fn[grid](
+            input,
+            output,
+            num_tokens,
+            topk,
+            hidden_size,
+            input_stride[0],
+            input_stride[1],
+            input_stride[2],
+            output_stride[0],
+            output_stride[1],
+            BLOCK_SIZE=block_size,
+            ELEM_SIZE=elem_size,
+            num_warps=num_warps,
+        )
+        return
 
     if (
         contiguous
