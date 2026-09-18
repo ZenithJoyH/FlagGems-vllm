@@ -19,6 +19,7 @@ import torch
 import triton
 import triton.language as tl
 
+from flaggems_vllm.runtime import device
 from flaggems_vllm.utils.triton_version_utils import has_triton_tle
 
 if has_triton_tle(3, 6, 0):
@@ -42,6 +43,8 @@ TLE_FLASHMLA_PREFILL_WORKER_NUM_WARPS = 4
 
 @triton.autotune(
     configs=[
+        triton.Config({"BK": 64, "BH": 16}, num_warps=4, num_stages=2),
+        triton.Config({"BK": 64, "BH": 16}, num_warps=4, num_stages=4),
         triton.Config({"BK": 64, "BH": 64}, num_warps=8, num_stages=2),
         triton.Config({"BK": 64, "BH": 64}, num_warps=8, num_stages=4),
     ],
@@ -69,7 +72,7 @@ def triton_flash_mla_sparse_fwd(
     stride_mm,
     stride_lm,
     SQ,  # s_q
-    HQ: tl.constexpr,  # h_q=64 or 128
+    HQ: tl.constexpr,  # number of query heads
     DQK: tl.constexpr,  # d_qk=512 or 576
     SKV,  # s_kv
     TOPK: tl.constexpr,  # topk
@@ -98,6 +101,7 @@ def triton_flash_mla_sparse_fwd(
     l_base = lse + i_sq * stride_lm + gbh_base
 
     offs_h = tl.arange(0, BH)
+    head_mask = gbh_base + offs_h < HQ
     offs_d = tl.arange(0, BDP)
     if DQK == 576:
         offs_td = tl.arange(0, 64)
@@ -105,11 +109,20 @@ def triton_flash_mla_sparse_fwd(
 
     # `[BH, 256] x 2` delivers better performance than `[BH, 512]` when BH=64
     q_ptr = q_base + offs_h[:, None] * stride_qh + offs_d[None, :]
-    q_blk0 = tl.load(q_ptr, eviction_policy="evict_first")
-    q_blk1 = tl.load(q_ptr + BDP, eviction_policy="evict_first")
+    q_blk0 = tl.load(
+        q_ptr, mask=head_mask[:, None], other=0.0, eviction_policy="evict_first"
+    )
+    q_blk1 = tl.load(
+        q_ptr + BDP,
+        mask=head_mask[:, None],
+        other=0.0,
+        eviction_policy="evict_first",
+    )
     if DQK == 576:
         tq_ptr = q_base + DP + offs_h[:, None] * stride_qh + offs_td[None, :]
-        tq_blk = tl.load(tq_ptr, eviction_policy="evict_first")
+        tq_blk = tl.load(
+            tq_ptr, mask=head_mask[:, None], other=0.0, eviction_policy="evict_first"
+        )
 
     max_log = tl.full([BH], float("-inf"), dtype=tl.float32)
     sum_exp = tl.full([BH], 0.0, dtype=tl.float32)
@@ -167,19 +180,21 @@ def triton_flash_mla_sparse_fwd(
         max_log = new_max
 
     # step7: store max_logits
-    valid_mask = max_log != float("-inf")
+    valid_mask = head_mask & (max_log != float("-inf"))
     max_log = tl.where(valid_mask, max_log, float("-inf"))
-    tl.store(max_log_base + offs_h, max_log)  # [BH], float32
+    tl.store(max_log_base + offs_h, max_log, mask=head_mask)  # [BH], float32
 
     # step8: lse=logsumexp(qk) final part, store lse
     orig_lse = max_log + tl.math.log(sum_exp)
     lse_out = tl.where(valid_mask, orig_lse, float("inf"))
-    tl.store(l_base + offs_h, lse_out)  # [BH], float32
+    tl.store(l_base + offs_h, lse_out, mask=head_mask)  # [BH], float32
 
     # step9: exp(qk-lse) @ gathered_kv.trans(), final part
     if HAVE_ATTN_SINK:
         # step10: attn_sink
-        sink = tl.load(attn_sink_ptr + offs_h)  # [BH]
+        sink = tl.load(
+            attn_sink_ptr + offs_h, mask=head_mask, other=float("-inf")
+        )  # [BH]
         sum_exp_new_lse = tl.math.exp(orig_lse) + tl.math.exp(sink)
         factor = tl.math.exp(max_log) / sum_exp_new_lse
     else:
@@ -189,8 +204,8 @@ def triton_flash_mla_sparse_fwd(
     out_vals1 = tl.where(valid_mask[:, None], acc1 * factor[:, None], 0.0)
     # step11: store output
     o_ptr = o_base + offs_h[:, None] * stride_oh + offs_d[None, :]  # [BH, BDP]
-    tl.store(o_ptr, out_vals0.to(tl.bfloat16))
-    tl.store(o_ptr + BDP, out_vals1.to(tl.bfloat16))
+    tl.store(o_ptr, out_vals0.to(tl.bfloat16), mask=head_mask[:, None])
+    tl.store(o_ptr + BDP, out_vals1.to(tl.bfloat16), mask=head_mask[:, None])
 
 
 if HAS_TLE_FLASHMLA_SPARSE:
@@ -1015,6 +1030,8 @@ def _can_use_tle_flash_mla_sparse_fwd(
     d_v: int,
     topk_length: Optional[torch.Tensor] = None,
 ) -> bool:
+    if device.vendor_name == "thead":
+        return False
     if not (HAS_TLE_FLASHMLA_SPARSE and _flash_mla_sparse_tle_enabled()):
         return False
     if q.device.type != "cuda":
@@ -1104,7 +1121,7 @@ def flash_mla_sparse_fwd(
 
     # check from FlashMLA
     assert HKV == 1, "h_kv is expected to be 1"
-    assert HQ == 64 or HQ == 128, "Unsupported h_q"
+    assert HQ > 0, "h_q must be positive"
     assert DQK == 576 or DQK == 512, "Unsupported d_qk"
 
     _ = SKV
