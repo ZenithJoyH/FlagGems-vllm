@@ -105,3 +105,14 @@ moe_sum_general:
       BLOCK_SIZE: 2048
     num_warps: 8
     num_stages: 3
+
+# GLM sparse-indexer production shapes otherwise inherit 144 NVIDIA candidates
+# and autotune every exact M/N pair. This configuration won 16/18 observed
+# PPU-ZW810E shapes and stayed within 4.4% of the winner on the other two.
+fp8_fp4_mqa_logits:
+  - META:
+      BLOCK_M: 4
+      BLOCK_N: 64
+      HEAD_BLOCK: 16
+    num_warps: 4
+    num_stages: 2
