@@ -27,7 +27,11 @@ except ImportError:
     SM90_AVAILABLE = False
 
 import flaggems_vllm
-from flaggems_vllm.ops.fp8_fp4_mqa_logits import fp8_fp4_mqa_logits
+from flaggems_vllm import runtime
+from flaggems_vllm.ops.fp8_fp4_mqa_logits import (
+    _fp8_fp4_mqa_logits_kernel,
+    fp8_fp4_mqa_logits,
+)
 
 from .accuracy_utils import gems_assert_close, to_reference
 
@@ -63,6 +67,37 @@ def _build_inputs(M, N, device):
     ke = torch.full((M,), N, dtype=torch.int32, device=device)
 
     return q_fp8, k_fp8, k_scale, weights, ks, ke
+
+
+def _config_signature(config):
+    return config.all_kwargs()
+
+
+def test_fp8_fp4_mqa_logits_uses_flaggems_vllm_runtime_configs():
+    expected = runtime.get_tuned_config("fp8_fp4_mqa_logits")
+    actual = _fp8_fp4_mqa_logits_kernel.fn.configs
+
+    assert [_config_signature(config) for config in actual] == [
+        _config_signature(config) for config in expected
+    ]
+
+
+@pytest.mark.skipif(
+    runtime.device.vendor_name != "thead",
+    reason="requires thead backend configuration",
+)
+def test_fp8_fp4_mqa_logits_thead_uses_single_validated_config():
+    actual = _fp8_fp4_mqa_logits_kernel.fn.configs
+
+    assert len(actual) == 1
+    assert _config_signature(actual[0]) == {
+        "BLOCK_M": 4,
+        "BLOCK_N": 64,
+        "HEAD_BLOCK": 16,
+        "num_warps": 4,
+        "num_ctas": 1,
+        "num_stages": 2,
+    }
 
 
 @pytest.mark.fp8_fp4_mqa_logits
