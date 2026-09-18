@@ -12,11 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from flaggems_vllm.runtime.backend._thead.ops.bf16_paged_mqa_logits_graph_safe import (
+    bf16_paged_mqa_logits_graph_safe,
+)
 from flaggems_vllm.runtime.backend._thead.ops.causal_conv1d import (
     causal_conv1d_fn,
 )
 from flaggems_vllm.runtime.backend._thead.ops.chunk_kda import (
     chunk_kda_with_safe_gate,
+)
+from flaggems_vllm.runtime.backend._thead.ops.cp_gather_indexer_k_bf16_cache import (
+    cp_gather_indexer_k_bf16_cache,
 )
 from flaggems_vllm.runtime.backend._thead.ops.fused_moe import (
     fused_experts_impl,
@@ -24,14 +30,30 @@ from flaggems_vllm.runtime.backend._thead.ops.fused_moe import (
     invoke_fused_moe_triton_kernel,
     outplace_fused_experts,
 )
+from flaggems_vllm.runtime.backend._thead.ops.indexer_pool import (
+    append_tail_to_topk,
+    expand_pools_to_tokens,
+)
+from flaggems_vllm.runtime.backend._thead.ops.kpool_compress import (
+    kpool_compress_and_write_cache,
+    kpool_decode_update_and_maybe_write_cache_batched,
+)
 from flaggems_vllm.runtime.backend._thead.ops.persistent_topk import persistent_topk
+from flaggems_vllm.runtime.backend._thead.ops.prefill_tail import persist_prefill_tail
 
 __all__ = [
+    "append_tail_to_topk",
+    "bf16_paged_mqa_logits_graph_safe",
     "causal_conv1d_fn",
     "chunk_kda_with_safe_gate",
+    "cp_gather_indexer_k_bf16_cache",
+    "expand_pools_to_tokens",
     "fused_experts_impl",
     "inplace_fused_experts",
     "invoke_fused_moe_triton_kernel",
+    "kpool_compress_and_write_cache",
+    "kpool_decode_update_and_maybe_write_cache_batched",
     "outplace_fused_experts",
+    "persist_prefill_tail",
     "persistent_topk",
 ]
