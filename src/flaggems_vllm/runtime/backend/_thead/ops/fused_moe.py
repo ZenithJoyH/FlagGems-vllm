@@ -21,11 +21,12 @@ from typing import Any, Optional
 import torch
 import triton
 import triton.language as tl
+import triton.language.extra.libdevice as libdevice
 
 from flaggems_vllm.ops.moe_align_block_size import moe_align_block_size_no_tle
 from flaggems_vllm.ops.moe_sum import moe_sum
 from flaggems_vllm.runtime import device, torch_device_fn
-from flaggems_vllm.utils import pointwise_dynamic
+from flaggems_vllm.utils import libentry, pointwise_dynamic
 
 logger = logging.getLogger(__name__)
 
@@ -359,6 +360,56 @@ def apply_moe_activation(
     return output
 
 
+@libentry()
+@triton.jit
+def _dynamic_per_token_int8_quant_kernel(
+    input_ptr,
+    output_ptr,
+    scale_ptr,
+    hidden_size: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    token_idx = tl.program_id(0)
+    offsets = tl.arange(0, BLOCK_SIZE)
+    mask = offsets < hidden_size
+    values = tl.load(
+        input_ptr + token_idx * hidden_size + offsets,
+        mask=mask,
+        other=0.0,
+    ).to(tl.float32)
+    absmax = tl.maximum(tl.max(tl.abs(values), axis=0), 1e-10)
+    scale = absmax / 127.0
+    quantized = libdevice.rint(libdevice.div_rn(values, scale))
+    quantized = tl.minimum(tl.maximum(quantized, -128.0), 127.0)
+    tl.store(
+        output_ptr + token_idx * hidden_size + offsets,
+        quantized.to(tl.int8),
+        mask=mask,
+    )
+    tl.store(scale_ptr + token_idx, scale)
+
+
+def _dynamic_per_token_int8_quant(
+    A: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    original_shape = A.shape
+    A_flat = A.reshape(-1, A.shape[-1])
+    output = torch.empty_like(A_flat, dtype=torch.int8)
+    scale = torch.empty(
+        (A_flat.shape[0], 1), device=A.device, dtype=torch.float32
+    )
+    block_size = triton.next_power_of_2(A_flat.shape[1])
+    with torch_device_fn.device(A.device):
+        _dynamic_per_token_int8_quant_kernel[(A_flat.shape[0],)](
+            A_flat,
+            output,
+            scale,
+            hidden_size=A_flat.shape[1],
+            BLOCK_SIZE=block_size,
+        )
+    return output.reshape(original_shape), scale.reshape(original_shape[:-1] + (1,))
+
+
 def _int8_quantize(
     A: torch.Tensor,
     A_scale: Optional[torch.Tensor],
@@ -390,6 +441,9 @@ def _int8_quantize(
         A_q = A_q.reshape(orig_shape)
         scale = scale.reshape(M, K // block_k)
         return A_q, scale
+
+    elif per_act_token and A.is_contiguous() and 0 < A.shape[-1] <= 8192:
+        return _dynamic_per_token_int8_quant(A)
 
     elif per_act_token:
         A_flat = A.reshape(-1, A.size(-1))
