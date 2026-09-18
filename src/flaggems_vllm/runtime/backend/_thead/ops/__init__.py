@@ -15,6 +15,9 @@
 from flaggems_vllm.runtime.backend._thead.ops.causal_conv1d import (
     causal_conv1d_fn,
 )
+from flaggems_vllm.runtime.backend._thead.ops.chunk_kda import (
+    chunk_kda_with_safe_gate,
+)
 from flaggems_vllm.runtime.backend._thead.ops.fused_moe import (
     fused_experts_impl,
     inplace_fused_experts,
@@ -24,6 +27,7 @@ from flaggems_vllm.runtime.backend._thead.ops.persistent_topk import persistent_
 
 __all__ = [
     "causal_conv1d_fn",
+    "chunk_kda_with_safe_gate",
     "fused_experts_impl",
     "inplace_fused_experts",
     "outplace_fused_experts",
