@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from flaggems_vllm.runtime.backend._thead.fused.flashmla_sparse import (
+    flash_mla_sparse_fwd,
+)
 from flaggems_vllm.runtime.backend._thead.fused.moe_sum import moe_sum
 
 __all__ = [
+    "flash_mla_sparse_fwd",
     "moe_sum",
 ]
