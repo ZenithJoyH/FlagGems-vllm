@@ -21,6 +21,7 @@ from flaggems_vllm.runtime.backend._thead.ops.chunk_kda import (
 from flaggems_vllm.runtime.backend._thead.ops.fused_moe import (
     fused_experts_impl,
     inplace_fused_experts,
+    invoke_fused_moe_triton_kernel,
     outplace_fused_experts,
 )
 from flaggems_vllm.runtime.backend._thead.ops.persistent_topk import persistent_topk
@@ -30,6 +31,7 @@ __all__ = [
     "chunk_kda_with_safe_gate",
     "fused_experts_impl",
     "inplace_fused_experts",
+    "invoke_fused_moe_triton_kernel",
     "outplace_fused_experts",
     "persistent_topk",
 ]
