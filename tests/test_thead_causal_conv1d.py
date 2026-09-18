@@ -88,9 +88,9 @@ def test_adapter_routes_without_changing_default_slot_ids(
 ):
     x, weight, conv_states, query_start_loc = make_inputs(tokens)
     native = Mock(return_value=torch.empty_like(x))
-    flaggems = Mock(return_value=torch.empty_like(x))
+    thead = Mock(return_value=torch.empty_like(x))
     monkeypatch.setattr(causal_conv1d, "_native_causal_conv1d_fn", native)
-    monkeypatch.setattr(causal_conv1d, "_flaggems_causal_conv1d_fn", flaggems)
+    monkeypatch.setattr(causal_conv1d, "_thead_causal_conv1d_fn", thead)
 
     causal_conv1d.causal_conv1d_fn(
         x,
@@ -101,8 +101,8 @@ def test_adapter_routes_without_changing_default_slot_ids(
         metadata=SimpleNamespace(),
     )
 
-    selected = native if expected == "native" else flaggems
-    rejected = flaggems if expected == "native" else native
+    selected = native if expected == "native" else thead
+    rejected = thead if expected == "native" else native
     selected.assert_called_once()
     rejected.assert_not_called()
     assert selected.call_args.kwargs["pad_slot_id"] == -1

@@ -32,7 +32,9 @@ def _candidate_module():
 
 
 def _fallback_module():
-    return import_module("flag_gems.fused.fused_recurrent_kda")
+    return import_module(
+        "flaggems_vllm.runtime.backend._thead.ops.fused_recurrent_kda"
+    )
 
 
 def is_available() -> bool:
@@ -47,7 +49,10 @@ def is_available() -> bool:
 
 
 def _get_prefill_metadata() -> Any | None:
-    attn_metadata = get_forward_context().attn_metadata
+    try:
+        attn_metadata = get_forward_context().attn_metadata
+    except AssertionError:
+        return None
     if not isinstance(attn_metadata, dict):
         return None
     for metadata in attn_metadata.values():

@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import torch
 
-from flag_gems.fused.causal_conv1d_update import (
-    causal_conv1d_fn as _flaggems_causal_conv1d_fn,
+from flaggems_vllm.runtime.backend._thead.ops.causal_conv1d_update import (
+    causal_conv1d_fn as _thead_causal_conv1d_fn,
 )
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import (
     causal_conv1d_fn as _native_causal_conv1d_fn,
@@ -31,7 +31,7 @@ _NATIVE_MIN_TOKENS_PER_REQUEST = 128
 
 def is_available() -> bool:
     return callable(_native_causal_conv1d_fn) and callable(
-        _flaggems_causal_conv1d_fn
+        _thead_causal_conv1d_fn
     )
 
 
@@ -101,7 +101,7 @@ def causal_conv1d_fn(
             initial_state_idx=initial_state_idx,
             num_computed_tokens=num_computed_tokens,
         )
-        else _flaggems_causal_conv1d_fn
+        else _thead_causal_conv1d_fn
     )
     return implementation(
         x,

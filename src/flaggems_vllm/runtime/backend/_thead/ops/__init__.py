@@ -18,6 +18,9 @@ from flaggems_vllm.runtime.backend._thead.ops.bf16_paged_mqa_logits_graph_safe i
 from flaggems_vllm.runtime.backend._thead.ops.causal_conv1d import (
     causal_conv1d_fn,
 )
+from flaggems_vllm.runtime.backend._thead.ops.causal_conv1d_update import (
+    causal_conv1d_update,
+)
 from flaggems_vllm.runtime.backend._thead.ops.chunk_kda import (
     chunk_kda_with_safe_gate,
 )
@@ -29,6 +32,12 @@ from flaggems_vllm.runtime.backend._thead.ops.fused_moe import (
     inplace_fused_experts,
     invoke_fused_moe_triton_kernel,
     outplace_fused_experts,
+)
+from flaggems_vllm.runtime.backend._thead.ops.fused_recurrent_kda import (
+    fused_recurrent_kda,
+)
+from flaggems_vllm.runtime.backend._thead.ops.fused_safe_kda_gate import (
+    fused_safe_kda_gate,
 )
 from flaggems_vllm.runtime.backend._thead.ops.indexer_pool import (
     append_tail_to_topk,
@@ -45,10 +54,13 @@ __all__ = [
     "append_tail_to_topk",
     "bf16_paged_mqa_logits_graph_safe",
     "causal_conv1d_fn",
+    "causal_conv1d_update",
     "chunk_kda_with_safe_gate",
     "cp_gather_indexer_k_bf16_cache",
     "expand_pools_to_tokens",
     "fused_experts_impl",
+    "fused_recurrent_kda",
+    "fused_safe_kda_gate",
     "inplace_fused_experts",
     "invoke_fused_moe_triton_kernel",
     "kpool_compress_and_write_cache",
