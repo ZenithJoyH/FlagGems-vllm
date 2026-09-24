@@ -64,6 +64,9 @@ from flaggems_vllm.ops.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert import 
 from flaggems_vllm.ops.fused_inv_rope_fp8_quant import fused_inv_rope_fp8_quant
 from flaggems_vllm.ops.fused_indexer_q_rope_quant import fused_indexer_q_rope_quant
 from flaggems_vllm.ops.fused_marlin_moe import fused_marlin_moe
+from flaggems_vllm.ops.fused_minimax_m3_qknorm_rope_kv_insert import (
+    fused_minimax_m3_qknorm_rope_kv_insert,
+)
 from flaggems_vllm.ops.fused_moe import (
     dispatch_fused_moe_kernel,
     fused_experts_impl,
@@ -133,6 +136,7 @@ from flaggems_vllm.ops.silu_and_mul_with_clamp import (
     silu_and_mul_with_clamp,
     silu_and_mul_with_clamp_out,
 )
+from flaggems_vllm.ops.swigluoai_uninterleave import swigluoai_uninterleave
 from flaggems_vllm.ops.skip_layernorm import skip_layer_norm
 from flaggems_vllm.ops.sparse_attention import sparse_attn_triton
 from flaggems_vllm.ops.stage_deepseek_v4_mega_moe_inputs import (
@@ -191,6 +195,7 @@ __all__ = [
     "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert",
     "fused_experts_impl",
     "fused_marlin_moe",
+    "fused_minimax_m3_qknorm_rope_kv_insert",
     "fused_indexer_q_rope_quant",
     "fused_inv_rope_fp8_quant",
     "fused_q_kv_rmsnorm",
@@ -247,6 +252,7 @@ __all__ = [
     "silu_and_mul_out",
     "silu_and_mul_with_clamp",
     "silu_and_mul_with_clamp_out",
+    "swigluoai_uninterleave",
     "sinkhorn_forward",
     "skip_layer_norm",
     "sparse_attn_triton",
