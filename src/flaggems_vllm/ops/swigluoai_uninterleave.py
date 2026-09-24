@@ -42,6 +42,20 @@ def _swigluoai_uninterleave_kernel(
     tl.store(output_ptr + offsets, value, mask=mask)
 
 
+def _storage_overlaps(input: torch.Tensor, out: torch.Tensor) -> bool:
+    """Reject overlapping ranges, not disjoint views of one vLLM workspace."""
+    if not torch._C._is_alias_of(input, out):
+        return False
+    if not out.is_contiguous():
+        return True
+    input_start = input.storage_offset()
+    out_start = out.storage_offset()
+    return (
+        input_start < out_start + out.numel()
+        and out_start < input_start + input.numel()
+    )
+
+
 def swigluoai_uninterleave(
     input: torch.Tensor,
     clamp_limit: float,
@@ -73,10 +87,10 @@ def swigluoai_uninterleave(
         out = torch.empty(shape, dtype=input.dtype, device=input.device)
     elif out.shape != shape or out.dtype != input.dtype or out.device != input.device:
         raise ValueError("out must match the expected shape, dtype and device")
+    if out.numel() and _storage_overlaps(input, out):
+        raise ValueError("out must not alias input")
     if not out.is_contiguous():
         raise NotImplementedError("out must be contiguous")
-    if out.untyped_storage().data_ptr() == input.untyped_storage().data_ptr():
-        raise ValueError("out must not alias input")
     if out.numel() == 0:
         return out
 
