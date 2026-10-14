@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import inspect
+import itertools
 import json
 import statistics
 
@@ -300,36 +301,36 @@ def test_fused_moe_int8_thead_gemm1(tokens):
             per_channel_quant=True,
         )
 
-    baseline_config = dict(config)
-    launch(baseline, baseline_config)
-    launch(candidate, config)
+    variants = {
+        "generic": (baseline, dict(config)),
+        # Explicit INT32 preserves the original tile and isolates the K change
+        # from both the backend switch and the accumulation precision fix.
+        "vendor_int32_original_k": (candidate, dict(config, INT8_ACCUMULATOR=True)),
+        "candidate": (candidate, dict(config)),
+    }
+    for op, cfg in variants.values():
+        launch(op, cfg)
     torch.cuda.synchronize()
-    timings = {"baseline": [], "candidate": []}
-    for trial in range(5):
-        order = (
-            ["baseline", "candidate"] if trial % 2 == 0 else ["candidate", "baseline"]
-        )
+    timings = {name: [] for name in variants}
+    # All six orders balance each variant's position and predecessor.
+    for order in itertools.permutations(variants):
         for name in order:
-            op, cfg = (
-                (baseline, baseline_config)
-                if name == "baseline"
-                else (candidate, config)
-            )
+            op, cfg = variants[name]
             timings[name].append(
                 triton.testing.do_bench_cudagraph(lambda: launch(op, cfg), rep=100)
             )
-    before = statistics.median(timings["baseline"])
-    after = statistics.median(timings["candidate"])
+    medians = {name: statistics.median(values) for name, values in timings.items()}
     print(
         json.dumps(
             {
                 "tokens": tokens,
                 "scope": "GEMM1 only",
                 "unit": "ms",
-                "baseline_ms": before,
-                "candidate_ms": after,
-                "speedup": before / after,
-                "paired_timings": timings,
+                "median_ms": medians,
+                "combined_speedup": medians["generic"] / medians["candidate"],
+                "tile_speedup": medians["vendor_int32_original_k"]
+                / medians["candidate"],
+                "counterbalanced_timings": timings,
             }
         )
     )

@@ -1325,7 +1325,43 @@ def _invoke_fused_moe_triton_kernel(
     direct_sum: bool = False,
     out_top_k: int = 1,
 ) -> None:
-    """Launch the fused_moe_kernel Triton kernel."""
+    """Launch the vendor kernel, selecting bounded W8A8 GEMM1 when supported."""
+    config = _gemm1_config(
+        A,
+        B,
+        C,
+        A_scale,
+        B_scale,
+        top_k,
+        config,
+        compute_type,
+        use_fp8_w8a8,
+        use_int8_w8a8,
+        use_int8_w8a16,
+        use_int4_w4a16,
+        per_channel_quant,
+        block_shape,
+        B_bias,
+        FUSE_SILU,
+        direct_sum,
+        mul_routed_weight,
+    )
+    if config.get("INT8_ACCUMULATOR", False):
+        if B.size(2) * 128 * 128 > 2147483647:
+            raise ValueError("INT8_ACCUMULATOR requires K * 128 * 128 <= INT32_MAX")
+        if not (
+            use_int8_w8a8
+            and per_channel_quant
+            and A.dtype == B.dtype == torch.int8
+            and not (use_fp8_w8a8 or use_int8_w8a16 or use_int4_w4a16 or FUSE_SILU)
+            and block_shape is None
+            and not config.get("SWAP_AB", False)
+        ):
+            raise ValueError(
+                "INT8_ACCUMULATOR requires non-blockwise per-channel W8A8 without fused SiLU or SWAP_AB"
+            )
+        if A.device.type != "cuda" or not _supports_gemm1_tile(A.device.index):
+            raise NotImplementedError("INT8_ACCUMULATOR requires T-Head 810E")
     assert topk_weights is not None or not mul_routed_weight
     assert topk_weights is None or topk_weights.stride(1) == 1
     assert sorted_token_ids is None or sorted_token_ids.stride(0) == 1
@@ -1366,11 +1402,8 @@ def _invoke_fused_moe_triton_kernel(
 
     config = config.copy()
     if config.get("INT8_ACCUMULATOR", False):
-        if B.size(2) * 128 * 128 > 2147483647:
-            raise ValueError("INT8_ACCUMULATOR requires K * 128 * 128 <= INT32_MAX")
-        # The selected integer kernel does not implement the generic swap layout.
-        if config.pop("SWAP_AB", False):
-            raise ValueError("INT8_ACCUMULATOR does not support SWAP_AB")
+        # A false generic layout flag is not a vendor kernel parameter.
+        config.pop("SWAP_AB", None)
     config["SPLIT_K"] = 1
     BLOCK_SIZE_K = config.pop("BLOCK_SIZE_K")
     if block_shape is not None:
@@ -1859,6 +1892,29 @@ def fused_experts_impl(
         use_half_gemm_fast_paths = not is_embedded_config and is_plain_half_config
 
         gemm1_config = base_config
+        if do_fuse_silu and use_int8_w8a8:
+            gemm1_config = _gemm1_config(
+                qcurr_hidden_states,
+                w1,
+                intermediate_cache1,
+                a1q_scale,
+                w1_scale,
+                top_k_num,
+                base_config,
+                compute_type,
+                use_fp8_w8a8,
+                use_int8_w8a8,
+                use_int8_w8a16,
+                use_int4_w4a16,
+                per_channel_quant,
+                block_shape,
+                w1_bias,
+                False,
+                False,
+                apply_router_weight_on_input,
+            )
+            # The bounded INT32 path must finish GEMM1 before SiLU activation.
+            do_fuse_silu = not gemm1_config.get("INT8_ACCUMULATOR", False)
         if do_fuse_silu and use_half_gemm_fast_paths:
             gemm1_config, _ = get_moe_config(
                 tokens_in_chunk,
@@ -2137,6 +2193,18 @@ def _supports_gemm1_tile(device_index: int) -> bool:
     return supported
 
 
+def _matches_gemm1_tile(config, tokens):
+    expected = _EXPECTED_CONFIGS.get(tokens)
+    if expected is None:
+        return False
+    normalized = dict(config)
+    for flag in ("SWAP_AB", "USE_INT32_OFFSETS", "PAIR_GATE_UP_DOT"):
+        if not normalized.get(flag, False):
+            normalized.pop(flag, None)
+    normalized.setdefault("SPLIT_K", 1)
+    return normalized == expected
+
+
 def _gemm1_config(
     A,
     B,
@@ -2189,7 +2257,7 @@ def _gemm1_config(
         and B_scale is not None
         and A_scale.dtype == B_scale.dtype == torch.float32
         and tuple(A_scale.shape) == (m, 1)
-        and tuple(B_scale.shape) == (128, 768, 1)
+        and tuple(B_scale.shape) in ((128, 768), (128, 768, 1))
         and all(
             t.device == A.device and t.is_contiguous()
             for t in (A, B, C, A_scale, B_scale)
@@ -2200,7 +2268,7 @@ def _gemm1_config(
         return config
     tuned = dict(config)
     tuned["INT8_ACCUMULATOR"] = True
-    if config == _EXPECTED_CONFIGS.get(m):
+    if _matches_gemm1_tile(config, m):
         tuned["BLOCK_SIZE_K"] = 256
     return tuned
 
@@ -2256,21 +2324,6 @@ def invoke_fused_moe_triton_kernel(
         mul_routed_weight,
     )
     if config.get("INT8_ACCUMULATOR", False):
-        if B.size(2) * 128 * 128 > 2147483647:
-            raise ValueError("INT8_ACCUMULATOR requires K * 128 * 128 <= INT32_MAX")
-        if not (
-            use_int8_w8a8
-            and per_channel_quant
-            and A.dtype == B.dtype == torch.int8
-            and not (use_fp8_w8a8 or use_int8_w8a16 or use_int4_w4a16 or FUSE_SILU)
-            and block_shape is None
-            and not config.get("SWAP_AB", False)
-        ):
-            raise ValueError(
-                "INT8_ACCUMULATOR requires non-blockwise per-channel W8A8 without fused SiLU or SWAP_AB"
-            )
-        if A.device.type != "cuda" or not _supports_gemm1_tile(A.device.index):
-            raise NotImplementedError("INT8_ACCUMULATOR requires T-Head 810E")
         invoke = _invoke_fused_moe_triton_kernel
     else:
         invoke = _generic_invoke
