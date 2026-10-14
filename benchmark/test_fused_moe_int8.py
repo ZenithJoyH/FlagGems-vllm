@@ -334,3 +334,114 @@ def test_fused_moe_int8_thead_gemm1(tokens):
             }
         )
     )
+
+
+@pytest.mark.fused_moe
+@pytest.mark.skipif(
+    flaggems_vllm.vendor_name != "thead", reason="810E GEMM2 integration benchmark"
+)
+@pytest.mark.parametrize("tokens", [64, 1024, 8192])
+@pytest.mark.parametrize("scope", ["gemm2", "full_moe"])
+def test_fused_moe_int8_thead_gemm2_integration(tokens, scope):
+    from flaggems_vllm.runtime.backend._thead.ops import fused_moe as vendor
+
+    if not vendor._supports_gemm1_tile(torch.cuda.current_device()):
+        pytest.skip("Requires 810E")
+    torch.manual_seed(81)
+    ids = (torch.arange(tokens * 4, dtype=torch.int32, device="cuda") % 128).reshape(
+        tokens, 4
+    )
+    weights = torch.full((tokens, 4), 0.25, device="cuda")
+    b = torch.randint(-4, 5, (128, 6144, 384), dtype=torch.int8, device="cuda")
+    b_scale = torch.full((128, 6144), 0.015625, device="cuda")
+    config = vendor.get_default_config(
+        tokens, 128, 6144, 384, 4, "bf16", gemm_stage="gemm2"
+    )
+    bm = config["BLOCK_SIZE_M"]
+    size = ids.numel() + 128 * (bm - 1)
+    sorted_ids = torch.empty(size, dtype=torch.int32, device="cuda")
+    expert_ids = torch.empty(triton.cdiv(size, bm), dtype=torch.int32, device="cuda")
+    padded = torch.empty(1, dtype=torch.int32, device="cuda")
+    vendor.moe_align_block_size_triton(ids, 128, bm, sorted_ids, expert_ids, padded)
+    if scope == "gemm2":
+        a = torch.randint(-128, 128, (tokens * 4, 384), dtype=torch.int8, device="cuda")
+        a_scale = torch.full((tokens * 4, 1), 0.03125, device="cuda")
+        out = torch.empty((tokens, 4, 6144), dtype=torch.bfloat16, device="cuda")
+
+        def run():
+            vendor._invoke_fused_moe_triton_kernel(
+                a,
+                b,
+                out,
+                a_scale,
+                b_scale,
+                weights,
+                sorted_ids,
+                expert_ids,
+                padded,
+                True,
+                1,
+                config,
+                tl.bfloat16,
+                use_int8_w8a8=True,
+                per_channel_quant=True,
+            )
+            return out
+
+    else:
+        hidden = torch.randn((tokens, 6144), dtype=torch.bfloat16, device="cuda")
+        w1 = torch.randint(-4, 5, (128, 768, 6144), dtype=torch.int8, device="cuda")
+        w1_scale = torch.full((128, 768), 0.015625, device="cuda")
+
+        def run():
+            return flaggems_vllm.fused_experts_impl(
+                hidden,
+                w1,
+                b,
+                weights,
+                ids,
+                use_int8_w8a8=True,
+                per_channel_quant=True,
+                w1_scale=w1_scale,
+                w2_scale=b_scale,
+            )
+
+    selector = vendor._use_gemm2_int32
+    disabled = lambda *a, **k: False
+
+    def launch(name):
+        # This process-local switch changes only internal GEMM2 selection. Both
+        # variants use the same retained G1 policy and existing vendor tiles.
+        vendor._use_gemm2_int32 = selector if name == "candidate" else disabled
+        try:
+            return run()
+        finally:
+            vendor._use_gemm2_int32 = selector
+
+    before = launch("baseline").clone()
+    after = launch("candidate")
+    torch.cuda.synchronize()
+    torch.testing.assert_close(after, before, rtol=0, atol=0)
+    timings = {"baseline": [], "candidate": []}
+    for trial in range(6):
+        order = (
+            ("baseline", "candidate") if trial % 2 == 0 else ("candidate", "baseline")
+        )
+        for name in order:
+            timings[name].append(
+                triton.testing.do_bench_cudagraph(lambda: launch(name), rep=100)
+            )
+    medians = {name: statistics.median(values) for name, values in timings.items()}
+    print(
+        json.dumps(
+            {
+                "tokens": tokens,
+                "scope": scope,
+                "unit": "ms",
+                "median_ms": medians,
+                "speedup": medians["baseline"] / medians["candidate"],
+                "selected_gemm2": tokens in (1024, 8192),
+                "paired_timings": timings,
+            }
+        )
+    )

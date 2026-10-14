@@ -1325,7 +1325,61 @@ def _invoke_fused_moe_triton_kernel(
     direct_sum: bool = False,
     out_top_k: int = 1,
 ) -> None:
-    """Launch the vendor kernel, selecting bounded W8A8 GEMM1 when supported."""
+    """Select bounded W8A8 GEMM1/GEMM2, otherwise keep the vendor schedule."""
+    if _use_gemm2_int32(
+        A,
+        B,
+        C,
+        A_scale,
+        B_scale,
+        topk_weights,
+        top_k,
+        config,
+        compute_type,
+        use_fp8_w8a8,
+        use_int8_w8a8,
+        use_int8_w8a16,
+        use_int4_w4a16,
+        per_channel_quant,
+        block_shape,
+        B_bias,
+        FUSE_SILU,
+        direct_sum,
+        mul_routed_weight,
+    ):
+        from flaggems_vllm.ops.fused_moe import (
+            invoke_fused_moe_triton_kernel as _generic_invoke,
+        )
+
+        generic_config = dict(config)
+        # This is an addressing implementation choice of the vendor kernel,
+        # not a generic kernel argument. All actual GEMM tile values stay intact.
+        generic_config.pop("USE_INT32_OFFSETS", None)
+        return _generic_invoke(
+            A,
+            B,
+            C,
+            A_scale,
+            B_scale,
+            topk_weights,
+            sorted_token_ids,
+            expert_ids,
+            num_tokens_post_padded,
+            mul_routed_weight,
+            top_k,
+            generic_config,
+            compute_type,
+            use_fp8_w8a8=use_fp8_w8a8,
+            use_int8_w8a8=use_int8_w8a8,
+            use_int8_w8a16=use_int8_w8a16,
+            use_int4_w4a16=use_int4_w4a16,
+            per_channel_quant=per_channel_quant,
+            block_shape=block_shape,
+            B_bias=B_bias,
+            FUSE_SILU=FUSE_SILU,
+            direct_sum=direct_sum,
+            out_top_k=out_top_k,
+        )
     config = _gemm1_config(
         A,
         B,
@@ -2271,6 +2325,80 @@ def _gemm1_config(
     if _matches_gemm1_tile(config, m):
         tuned["BLOCK_SIZE_K"] = 256
     return tuned
+
+
+def _use_gemm2_int32(
+    A,
+    B,
+    C,
+    A_scale,
+    B_scale,
+    topk_weights,
+    top_k,
+    config,
+    compute_type,
+    use_fp8_w8a8,
+    use_int8_w8a8,
+    use_int8_w8a16,
+    use_int4_w4a16,
+    per_channel_quant,
+    block_shape,
+    B_bias,
+    FUSE_SILU,
+    direct_sum,
+    mul_routed_weight,
+):
+    """Reuse upstream INT32_DOWN only for the retained 810E GEMM2 shapes."""
+    if not (
+        top_k == 1
+        and C.ndim == 3
+        and C.size(0) in (1024, 8192)
+        and "INT8_ACCUMULATOR" not in config
+        and not config.get("SWAP_AB", False)
+        and set(config).issubset(
+            {
+                "BLOCK_SIZE_M",
+                "BLOCK_SIZE_N",
+                "BLOCK_SIZE_K",
+                "GROUP_SIZE_M",
+                "SPLIT_K",
+                "num_warps",
+                "num_stages",
+                "USE_INT32_OFFSETS",
+                "PAIR_GATE_UP_DOT",
+                "SWAP_AB",
+            }
+        )
+        and A.device.type == "cuda"
+        and A.dtype == B.dtype == torch.int8
+        and C.dtype == torch.bfloat16
+        and compute_type == tl.bfloat16
+        and tuple(A.shape) == (C.size(0) * 4, 384)
+        and tuple(B.shape) == (128, 6144, 384)
+        and tuple(C.shape) == (C.size(0), 4, 6144)
+        and use_int8_w8a8
+        and per_channel_quant
+        and mul_routed_weight
+        and not any(
+            (use_fp8_w8a8, use_int8_w8a16, use_int4_w4a16, FUSE_SILU, direct_sum)
+        )
+        and block_shape is None
+        and B_bias is None
+        and A_scale is not None
+        and B_scale is not None
+        and A_scale.dtype == B_scale.dtype == torch.float32
+        and tuple(A_scale.shape) == (C.size(0) * 4, 1)
+        and tuple(B_scale.shape) in ((128, 6144), (128, 6144, 1))
+        and topk_weights is not None
+        and topk_weights.dtype in (torch.float32, torch.bfloat16)
+        and tuple(topk_weights.shape) == (C.size(0), 4)
+        and all(
+            t.device == A.device and t.is_contiguous()
+            for t in (A, B, C, A_scale, B_scale, topk_weights)
+        )
+    ):
+        return False
+    return _supports_gemm1_tile(A.device.index)
 
 
 def invoke_fused_moe_triton_kernel(

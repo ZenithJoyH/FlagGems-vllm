@@ -746,13 +746,16 @@ def test_int8_gemm1_varied_routes_scales_graph(tokens, scale_rank):
     flaggems_vllm.vendor_name != "thead", reason="PPU full-experts regression"
 )
 @pytest.mark.parametrize("scale_rank", [2, 3])
-def test_thead_full_experts_int8_selection_graph(scale_rank, monkeypatch):
+@pytest.mark.parametrize("tokens", [64, 1024, 8192])
+@pytest.mark.parametrize("route_dtype", [torch.float32, torch.bfloat16])
+def test_thead_full_experts_int8_selection_graph(
+    scale_rank, tokens, route_dtype, monkeypatch
+):
     from flaggems_vllm.runtime.backend._thead.ops import fused_moe as vendor
 
     if not vendor._supports_gemm1_tile(torch.cuda.current_device()):
         pytest.skip("Requires 810E")
     generator = torch.Generator().manual_seed(81)
-    tokens = 64  # Small-M SiLU fusion would otherwise bypass the INT32 path.
     hidden_cpu = (torch.randn(tokens, 6144, generator=generator) * 0.25).to(
         torch.bfloat16
     )
@@ -761,6 +764,7 @@ def test_thead_full_experts_int8_selection_graph(scale_rank, monkeypatch):
     )
     router_cpu = torch.rand(tokens, 4, generator=generator)
     router_cpu /= router_cpu.sum(-1, keepdim=True)
+    router_cpu = router_cpu.to(route_dtype)
     channels1, channels2 = torch.arange(768), torch.arange(6144)
     experts = torch.arange(128)[:, None]
     index1 = (channels1[None, :] * 7 + experts * 13) % 6144
@@ -782,30 +786,54 @@ def test_thead_full_experts_int8_selection_graph(scale_rank, monkeypatch):
         scale = x.abs().amax(-1, keepdim=True).clamp(min=1e-10).float() / 127
         return (x.float() / scale).round().clamp(-128, 127).to(torch.int8), scale
 
-    q1, a1_scale = quant(hidden_cpu)
-    ref1 = q1[:, None, :].expand(-1, 4, -1).gather(2, index1[routes_cpu.long()]).int()
-    ref1 = (ref1 * coeff1[routes_cpu.long()].int()).float()
-    ref1 = (ref1 * a1_scale[:, None, :] * scale1[routes_cpu.long()]).to(torch.bfloat16)
-    gate, up = ref1.float().chunk(2, dim=-1)
-    activated = (gate * torch.sigmoid(gate) * up).to(torch.bfloat16)
-    q2, a2_scale = quant(activated)
-    ref2 = q2.gather(2, index2[routes_cpu.long()]).int()
-    ref2 = (ref2 * coeff2[routes_cpu.long()].int()).float()
-    ref2 = ref2 * a2_scale * scale2[routes_cpu.long()] * router_cpu[:, :, None]
-    expected = ref2.to(torch.bfloat16).float().sum(1).to(torch.bfloat16)
+    expected_chunks = []
+    for begin in range(0, tokens if tokens == 64 else 0, 128):
+        end = min(begin + 128, tokens)
+        choice = routes_cpu[begin:end].long()
+        q1, a1_scale = quant(hidden_cpu[begin:end])
+        ref1 = q1[:, None, :].expand(-1, 4, -1).gather(2, index1[choice]).int()
+        ref1 = (ref1 * coeff1[choice].int()).float()
+        ref1 = (ref1 * a1_scale[:, None, :] * scale1[choice]).to(torch.bfloat16)
+        gate, up = ref1.float().chunk(2, dim=-1)
+        activated = (gate * torch.sigmoid(gate) * up).to(torch.bfloat16)
+        q2, a2_scale = quant(activated)
+        ref2 = q2.gather(2, index2[choice]).int()
+        ref2 = (ref2 * coeff2[choice].int()).float()
+        ref2 = ref2 * a2_scale * scale2[choice] * router_cpu[begin:end, :, None].float()
+        expected_chunks.append(
+            ref2.to(torch.bfloat16).float().sum(1).to(torch.bfloat16)
+        )
+    expected = torch.cat(expected_chunks) if expected_chunks else None
 
-    kernel = vendor.fused_moe_kernel
     records = []
 
     class RecordingKernel:
+        def __init__(self, kernel):
+            self.kernel = kernel
+
         def __getitem__(self, grid):
             def launch(*args, **kwargs):
                 records.append(kwargs)
-                return kernel[grid](*args, **kwargs)
+                return self.kernel[grid](*args, **kwargs)
 
             return launch
 
-    monkeypatch.setattr(vendor, "fused_moe_kernel", RecordingKernel())
+    monkeypatch.setattr(
+        vendor, "fused_moe_kernel", RecordingKernel(vendor.fused_moe_kernel)
+    )
+    monkeypatch.setattr(moe, "fused_moe_kernel", RecordingKernel(moe.fused_moe_kernel))
+
+    quantizer = vendor.moe_kernel_quantize_input
+    stage_inputs = []
+    capture_stage = False
+
+    def record_quantizer(*args, **kwargs):
+        quantized, scale = quantizer(*args, **kwargs)
+        if capture_stage and quantized.size(-1) == 384:
+            stage_inputs.append((quantized.cpu(), scale.cpu()))
+        return quantized, scale
+
+    monkeypatch.setattr(vendor, "moe_kernel_quantize_input", record_quantizer)
 
     def run():
         return flaggems_vllm.fused_experts_impl(
@@ -820,7 +848,14 @@ def test_thead_full_experts_int8_selection_graph(scale_rank, monkeypatch):
             w2_scale=w2_scale,
         )
 
+    selector = vendor._use_gemm2_int32
+    with monkeypatch.context() as baseline_patch:
+        baseline_patch.setattr(vendor, "_use_gemm2_int32", lambda *a, **k: False)
+        baseline = run().clone()
+    records.clear()
+    capture_stage = True
     run()
+    capture_stage = False
     torch.cuda.synchronize()
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
@@ -834,5 +869,284 @@ def test_thead_full_experts_int8_selection_graph(scale_rank, monkeypatch):
     )
     # The complete API's existing custom tile stays intact; K256 applies only
     # when its configuration matches one of the measured native configurations.
-    assert all(record["BLOCK_SIZE_K"] == 64 for record in gemm1)
-    torch.testing.assert_close(out.cpu(), expected, rtol=0.03, atol=1e-7)
+    assert all(
+        record["BLOCK_SIZE_K"] == (32 if tokens == 8192 else 64) for record in gemm1
+    )
+    gemm2 = [record for record in records if record["top_k"] == 1]
+    assert gemm2 and all(
+        record.get("INT32_DOWN", False) == (tokens in (1024, 8192)) for record in gemm2
+    )
+    assert vendor._use_gemm2_int32 is selector
+    torch.testing.assert_close(out, baseline, rtol=0, atol=0)
+    if tokens == 64:
+        torch.testing.assert_close(out.cpu(), expected, rtol=0.03, atol=1e-7)
+    else:
+        # Large-batch native SiLU/quantization can cross BF16 rounding ties
+        # differently from a CPU float reference, even on the unchanged path.
+        # Preserve exact whole-call equivalence above, and independently verify
+        # GEMM2 plus reduction against an integer oracle for its actual inputs.
+        assert len(stage_inputs) == 1
+        actual_q2, actual_scale = stage_inputs[0]
+        actual_q2 = actual_q2.reshape(tokens, 4, 384)
+        actual_scale = actual_scale.reshape(tokens, 4, 1)
+        for begin in range(0, tokens, 128):
+            end = min(begin + 128, tokens)
+            choice = routes_cpu[begin:end].long()
+            dots = actual_q2[begin:end].gather(2, index2[choice]).int()
+            dots = (dots * coeff2[choice].int()).float()
+            down = dots * actual_scale[begin:end] * scale2[choice]
+            down = (down * router_cpu[begin:end, :, None].float()).to(torch.bfloat16)
+            reference = down.float().sum(1).to(torch.bfloat16)
+            torch.testing.assert_close(out[begin:end].cpu(), reference, rtol=0, atol=0)
+
+
+def _gemm2_policy_inputs(tokens=1024):
+    from flaggems_vllm.runtime.backend._thead.ops import fused_moe as vendor
+
+    return dict(
+        A=_TensorMetadata((tokens * 4, 384), torch.int8),
+        B=_TensorMetadata((128, 6144, 384), torch.int8),
+        C=_TensorMetadata((tokens, 4, 6144), torch.bfloat16),
+        A_scale=_TensorMetadata((tokens * 4, 1), torch.float32),
+        B_scale=_TensorMetadata((128, 6144, 1), torch.float32),
+        topk_weights=_TensorMetadata((tokens, 4), torch.float32),
+        top_k=1,
+        config=vendor.get_default_config(
+            tokens, 128, 6144, 384, 4, "bf16", gemm_stage="gemm2"
+        ),
+        compute_type=tl.bfloat16,
+        use_fp8_w8a8=False,
+        use_int8_w8a8=True,
+        use_int8_w8a16=False,
+        use_int4_w4a16=False,
+        per_channel_quant=True,
+        block_shape=None,
+        B_bias=None,
+        FUSE_SILU=False,
+        direct_sum=False,
+        mul_routed_weight=True,
+    )
+
+
+@pytest.mark.parametrize("tokens", [1024, 8192])
+@pytest.mark.parametrize("scale_rank", [2, 3])
+@pytest.mark.parametrize("route_dtype", [torch.float32, torch.bfloat16])
+def test_thead_internal_gemm2_policy(tokens, scale_rank, route_dtype, monkeypatch):
+    from flaggems_vllm.runtime.backend._thead.ops import fused_moe as vendor
+
+    monkeypatch.setattr(vendor, "_supports_gemm1_tile", lambda _: True)
+    args = _gemm2_policy_inputs(tokens)
+    if scale_rank == 2:
+        args["B_scale"] = _TensorMetadata((128, 6144), torch.float32)
+    args["topk_weights"].dtype = route_dtype
+    original = dict(args["config"])
+    assert vendor._use_gemm2_int32(**args) is True
+    calls = []
+    monkeypatch.setattr(
+        moe, "invoke_fused_moe_triton_kernel", lambda *a, **k: calls.append((a, k))
+    )
+    vendor._invoke_fused_moe_triton_kernel(
+        **args,
+        sorted_token_ids=None,
+        expert_ids=None,
+        num_tokens_post_padded=None,
+    )
+    assert len(calls) == 1
+    forwarded = calls[0][0][11]
+    assert "USE_INT32_OFFSETS" not in forwarded
+    assert forwarded == {
+        key: value for key, value in original.items() if key != "USE_INT32_OFFSETS"
+    }
+    assert args["config"] == original
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        "small",
+        "other_m",
+        "capability",
+        "shape",
+        "layout",
+        "device",
+        "dtype",
+        "scale_dtype",
+        "scale_shape",
+        "route_dtype",
+        "route_shape",
+        "no_route",
+        "top_k",
+        "fp8",
+        "w8a16",
+        "w4a16",
+        "int8_disabled",
+        "per_channel",
+        "block",
+        "bias",
+        "fuse",
+        "sum",
+        "route_disabled",
+        "swap",
+        "explicit_false",
+        "explicit_true",
+        "unknown_config",
+    ],
+)
+def test_thead_internal_gemm2_policy_fallback(override, monkeypatch):
+    from flaggems_vllm.runtime.backend._thead.ops import fused_moe as vendor
+
+    monkeypatch.setattr(
+        vendor, "_supports_gemm1_tile", lambda _: override != "capability"
+    )
+    args = _gemm2_policy_inputs(
+        64 if override == "small" else 1025 if override == "other_m" else 1024
+    )
+    if override == "shape":
+        args["B"].shape = (128, 6144, 385)
+    elif override == "layout":
+        args["A"].contiguous = False
+    elif override == "device":
+        args["topk_weights"].device = torch.device("cuda:1")
+    elif override == "dtype":
+        args["C"].dtype = torch.float16
+    elif override == "scale_dtype":
+        args["A_scale"].dtype = torch.bfloat16
+    elif override == "scale_shape":
+        args["B_scale"].shape = (128, 6143, 1)
+    elif override == "route_dtype":
+        args["topk_weights"].dtype = torch.float16
+    elif override == "route_shape":
+        args["topk_weights"].shape = (1024, 3)
+    elif override == "no_route":
+        args["topk_weights"] = None
+    elif override == "top_k":
+        args["top_k"] = 4
+    elif override in ("fp8", "w8a16", "w4a16"):
+        args[
+            {
+                "fp8": "use_fp8_w8a8",
+                "w8a16": "use_int8_w8a16",
+                "w4a16": "use_int4_w4a16",
+            }[override]
+        ] = True
+    elif override in ("int8_disabled", "per_channel", "route_disabled"):
+        args[
+            {
+                "int8_disabled": "use_int8_w8a8",
+                "per_channel": "per_channel_quant",
+                "route_disabled": "mul_routed_weight",
+            }[override]
+        ] = False
+    elif override in ("block", "bias"):
+        args["block_shape" if override == "block" else "B_bias"] = [128, 128]
+    elif override in ("fuse", "sum"):
+        args["FUSE_SILU" if override == "fuse" else "direct_sum"] = True
+    elif override == "swap":
+        args["config"]["SWAP_AB"] = True
+    elif override.startswith("explicit"):
+        args["config"]["INT8_ACCUMULATOR"] = override == "explicit_true"
+    elif override == "unknown_config":
+        args["config"]["unknown"] = 1
+    original = dict(args["config"])
+    assert vendor._use_gemm2_int32(**args) is False
+    assert args["config"] == original
+
+
+@requires_cuda
+@pytest.mark.skipif(
+    flaggems_vllm.vendor_name != "thead", reason="PPU internal GEMM2 regression"
+)
+@pytest.mark.parametrize("tokens", [1024, 8192])
+@pytest.mark.parametrize("route_dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("scale_rank", [2, 3])
+def test_thead_internal_gemm2_integer_oracle_graph(
+    tokens, route_dtype, scale_rank, monkeypatch
+):
+    from flaggems_vllm.runtime.backend._thead.ops import fused_moe as vendor
+
+    if not vendor._supports_gemm1_tile(torch.cuda.current_device()):
+        pytest.skip("Requires 810E")
+    generator = torch.Generator().manual_seed(81)
+    values = torch.randint(
+        -128, 128, (tokens * 4, 1), dtype=torch.int8, generator=generator
+    )
+    values[0, 0] = -128
+    a = values.expand(-1, 384).contiguous().cuda()
+    last = torch.randint(-128, 128, (128, 6144), dtype=torch.int8, generator=generator)
+    b = torch.full((128, 6144, 384), 127, dtype=torch.int8, device="cuda")
+    b[:, :, 192:] = -127
+    b[:, :, -1] = last.cuda()
+    a_scale_cpu = torch.rand((tokens * 4, 1), generator=generator) * 0.03 + 0.01
+    b_scale_cpu = torch.rand((128, 6144), generator=generator) * 0.02 + 0.01
+    weights_cpu = torch.rand((tokens, 4), generator=generator).to(route_dtype)
+    ids_cpu = torch.randint(0, 128, (tokens, 4), dtype=torch.int32, generator=generator)
+    a_scale, b_scale = a_scale_cpu.cuda(), b_scale_cpu.cuda()
+    if scale_rank == 3:
+        b_scale = b_scale.unsqueeze(-1)
+    weights, ids = weights_cpu.cuda(), ids_cpu.cuda()
+    out = torch.empty((tokens, 4, 6144), dtype=torch.bfloat16, device="cuda")
+    config = vendor.get_default_config(
+        tokens, 128, 6144, 384, 4, "bf16", gemm_stage="gemm2"
+    )
+    bm = config["BLOCK_SIZE_M"]
+    size = ids.numel() + 128 * (bm - 1)
+    sorted_ids = torch.empty(size, dtype=torch.int32, device="cuda")
+    expert_ids = torch.empty(triton.cdiv(size, bm), dtype=torch.int32, device="cuda")
+    padded = torch.empty(1, dtype=torch.int32, device="cuda")
+    kernel = moe.fused_moe_kernel
+    records = []
+
+    class RecordingKernel:
+        def __getitem__(self, grid):
+            def launch(*args, **kwargs):
+                records.append(kwargs)
+                return kernel[grid](*args, **kwargs)
+
+            return launch
+
+    monkeypatch.setattr(moe, "fused_moe_kernel", RecordingKernel())
+
+    def run():
+        vendor.moe_align_block_size_triton(ids, 128, bm, sorted_ids, expert_ids, padded)
+        vendor._invoke_fused_moe_triton_kernel(
+            a,
+            b,
+            out,
+            a_scale,
+            b_scale,
+            weights,
+            sorted_ids,
+            expert_ids,
+            padded,
+            True,
+            1,
+            config,
+            tl.bfloat16,
+            use_int8_w8a8=True,
+            per_channel_quant=True,
+        )
+
+    run()
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run()
+    graph.replay()
+    graph.replay()
+    torch.cuda.synchronize()
+    assert records and all(record["INT32_DOWN"] for record in records)
+    for begin in range(0, tokens, 128):
+        end = min(begin + 128, tokens)
+        choice = ids_cpu[begin:end].long()
+        dots = values[begin * 4 : end * 4].reshape(-1, 4, 1).to(torch.int64) * (
+            last[choice].to(torch.int64) + 127
+        )
+        expected = (
+            dots.float()
+            * a_scale_cpu.reshape(tokens, 4, 1)[begin:end]
+            * b_scale_cpu[choice]
+        )
+        expected = (expected * weights_cpu[begin:end, :, None].float()).to(
+            torch.bfloat16
+        )
+        torch.testing.assert_close(out[begin:end].cpu(), expected, rtol=0, atol=0)
