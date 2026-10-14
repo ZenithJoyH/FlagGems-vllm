@@ -18,7 +18,13 @@ from flaggems_vllm.runtime.backend._thead.ops.fused_moe import (
     inplace_fused_experts,
     outplace_fused_experts,
 )
+from flaggems_vllm.runtime.backend._thead.ops.fused_moe_int8 import (
+    invoke_fused_moe_triton_kernel,
+)
 from flaggems_vllm.runtime.backend._thead.ops.gemma_rms_norm import gemma_rms_norm
+from flaggems_vllm.runtime.backend._thead.ops.moe_align_block_size import (
+    moe_align_block_size_triton,
+)
 from flaggems_vllm.runtime.backend._thead.ops.per_token_group_quant_fp8 import (
     SUPPORTED_FP8_DTYPE,
     per_token_group_quant_fp8,
@@ -32,6 +38,8 @@ __all__ = [
     "fused_experts_impl",
     "gemma_rms_norm",
     "inplace_fused_experts",
+    "invoke_fused_moe_triton_kernel",
+    "moe_align_block_size_triton",
     "outplace_fused_experts",
     "per_token_group_quant_fp8",
     "persistent_topk",
