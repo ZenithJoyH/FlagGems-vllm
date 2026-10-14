@@ -769,8 +769,15 @@ def fused_moe_kernel(
     DIRECT_SUM: tl.constexpr,
     OUT_TOP_K: tl.constexpr,
     FUSE_SILU: tl.constexpr,
+    INT8_ACCUMULATOR: tl.constexpr = False,
 ):
     """Fused MoE kernel: token × expert GEMM with quantization support and optional SiLU fusion."""
+    if INT8_ACCUMULATOR:
+        tl.static_assert(use_int8_w8a8 and per_channel_quant)
+        tl.static_assert(not use_fp8_w8a8 and not use_int8_w8a16)
+        tl.static_assert(group_k == 0 and group_n == 0)
+        tl.static_assert(not FUSE_SILU)
+
     # Map pid to C block (grouped ordering for L2 reuse)
     pid = tl.program_id(axis=0)
     # Adjust N for FUSE_SILU. If fused, the actual output dimension is N // 2
@@ -1115,6 +1122,8 @@ def fused_moe_kernel(
 
         # Accumulate C block in fp32
         accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+        if INT8_ACCUMULATOR:
+            accumulator_i32 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.int32)
 
         for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
             # Eliminate masking overhead when K is perfectly aligned with BLOCK_SIZE_K.
@@ -1149,12 +1158,20 @@ def fused_moe_kernel(
                 else:
                     if use_fp8_w8a8:
                         accumulator = tl.dot(a, b, acc=accumulator)
+                    elif INT8_ACCUMULATOR:
+                        accumulator_i32 = tl.dot(
+                            a, b, acc=accumulator_i32, out_dtype=tl.int32
+                        )
                     else:
                         accumulator += tl.dot(a, b)
             else:
                 accumulator += tl.dot(a, b)
             a_ptrs += BLOCK_SIZE_K * stride_ak
             b_ptrs += BLOCK_SIZE_K * stride_bk
+
+        # Convert once after the exact integer sum, before the existing epilogue.
+        if INT8_ACCUMULATOR:
+            accumulator = accumulator_i32.to(tl.float32)
 
         # Dequantization
         if use_int8_w8a16:
@@ -1283,7 +1300,7 @@ def invoke_fused_moe_wna16_triton_kernel(
     )
 
 
-def invoke_fused_moe_triton_kernel(
+def _invoke_fused_moe_triton_kernel(
     A: torch.Tensor,
     B: torch.Tensor,
     C: torch.Tensor,
@@ -1348,6 +1365,12 @@ def invoke_fused_moe_triton_kernel(
     HAS_BIAS = B_bias is not None
 
     config = config.copy()
+    if config.get("INT8_ACCUMULATOR", False):
+        if B.size(2) * 128 * 128 > 2147483647:
+            raise ValueError("INT8_ACCUMULATOR requires K * 128 * 128 <= INT32_MAX")
+        # The selected integer kernel does not implement the generic swap layout.
+        if config.pop("SWAP_AB", False):
+            raise ValueError("INT8_ACCUMULATOR does not support SWAP_AB")
     config["SPLIT_K"] = 1
     BLOCK_SIZE_K = config.pop("BLOCK_SIZE_K")
     if block_shape is not None:
@@ -1527,7 +1550,7 @@ def dispatch_fused_moe_kernel(
             block_shape,
         )
     else:
-        invoke_fused_moe_triton_kernel(
+        _invoke_fused_moe_triton_kernel(
             A,
             B,
             C,
@@ -2068,4 +2091,266 @@ def outplace_fused_experts(
         block_shape=block_shape,
         w1_bias=w1_bias,
         w2_bias=w2_bias,
+    )
+
+
+_EXPECTED_CONFIGS = {
+    64: {
+        "BLOCK_SIZE_M": 32,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "SPLIT_K": 1,
+        "num_warps": 4,
+        "num_stages": 3,
+    },
+    1024: {
+        "BLOCK_SIZE_M": 128,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "SPLIT_K": 1,
+        "num_warps": 8,
+        "num_stages": 3,
+    },
+    8192: {
+        "BLOCK_SIZE_M": 128,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "SPLIT_K": 1,
+        "num_warps": 8,
+        "num_stages": 3,
+    },
+}
+
+
+@functools.lru_cache(maxsize=16)
+def _supports_gemm1_tile(device_index: int) -> bool:
+    props = torch.cuda.get_device_properties(device_index)
+    supported = (
+        props.name == "PPU-ZW810E"
+        and props.major == 8
+        and props.minor == 0
+        and props.warp_size == 32
+    )
+    return supported
+
+
+def _gemm1_config(
+    A,
+    B,
+    C,
+    A_scale,
+    B_scale,
+    top_k,
+    config,
+    compute_type,
+    use_fp8_w8a8,
+    use_int8_w8a8,
+    use_int8_w8a16,
+    use_int4_w4a16,
+    per_channel_quant,
+    block_shape,
+    B_bias,
+    FUSE_SILU,
+    direct_sum,
+    mul_routed_weight,
+):
+    m = A.size(0)
+    if not (
+        0 < m <= 8192
+        and "INT8_ACCUMULATOR" not in config
+        and not config.get("SWAP_AB", False)
+        and A.device.type == "cuda"
+        and A.dtype == torch.int8
+        and B.dtype == torch.int8
+        and C.dtype == torch.bfloat16
+        and compute_type == tl.bfloat16
+        and tuple(A.shape) == (m, 6144)
+        and tuple(B.shape) == (128, 768, 6144)
+        and tuple(C.shape) == (m, 4, 768)
+        and top_k == 4
+        and use_int8_w8a8
+        and per_channel_quant
+        and not any(
+            (
+                use_fp8_w8a8,
+                use_int8_w8a16,
+                use_int4_w4a16,
+                FUSE_SILU,
+                direct_sum,
+                mul_routed_weight,
+            )
+        )
+        and block_shape is None
+        and B_bias is None
+        and A_scale is not None
+        and B_scale is not None
+        and A_scale.dtype == B_scale.dtype == torch.float32
+        and tuple(A_scale.shape) == (m, 1)
+        and tuple(B_scale.shape) == (128, 768, 1)
+        and all(
+            t.device == A.device and t.is_contiguous()
+            for t in (A, B, C, A_scale, B_scale)
+        )
+    ):
+        return config
+    if not _supports_gemm1_tile(A.device.index):
+        return config
+    tuned = dict(config)
+    tuned["INT8_ACCUMULATOR"] = True
+    if config == _EXPECTED_CONFIGS.get(m):
+        tuned["BLOCK_SIZE_K"] = 256
+    return tuned
+
+
+def invoke_fused_moe_triton_kernel(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    C: torch.Tensor,
+    A_scale: Optional[torch.Tensor],
+    B_scale: Optional[torch.Tensor],
+    topk_weights: Optional[torch.Tensor],
+    sorted_token_ids: torch.Tensor,
+    expert_ids: torch.Tensor,
+    num_tokens_post_padded: torch.Tensor,
+    mul_routed_weight: bool,
+    top_k: int,
+    config: dict[str, Any],
+    compute_type: tl.dtype,
+    use_fp8_w8a8: bool = False,
+    use_int8_w8a8: bool = False,
+    use_int8_w8a16: bool = False,
+    use_int4_w4a16: bool = False,
+    per_channel_quant: bool = False,
+    block_shape: Optional[list[int]] = None,
+    B_bias: torch.Tensor | None = None,
+    FUSE_SILU: bool = False,
+    direct_sum: bool = False,
+    out_top_k: int = 1,
+) -> None:
+    # Vendor modules may be discovered while the generic package imports.
+    from flaggems_vllm.ops.fused_moe import (
+        invoke_fused_moe_triton_kernel as _generic_invoke,
+    )
+
+    config = _gemm1_config(
+        A,
+        B,
+        C,
+        A_scale,
+        B_scale,
+        top_k,
+        config,
+        compute_type,
+        use_fp8_w8a8,
+        use_int8_w8a8,
+        use_int8_w8a16,
+        use_int4_w4a16,
+        per_channel_quant,
+        block_shape,
+        B_bias,
+        FUSE_SILU,
+        direct_sum,
+        mul_routed_weight,
+    )
+    if config.get("INT8_ACCUMULATOR", False):
+        if B.size(2) * 128 * 128 > 2147483647:
+            raise ValueError("INT8_ACCUMULATOR requires K * 128 * 128 <= INT32_MAX")
+        if not (
+            use_int8_w8a8
+            and per_channel_quant
+            and A.dtype == B.dtype == torch.int8
+            and not (use_fp8_w8a8 or use_int8_w8a16 or use_int4_w4a16 or FUSE_SILU)
+            and block_shape is None
+            and not config.get("SWAP_AB", False)
+        ):
+            raise ValueError(
+                "INT8_ACCUMULATOR requires non-blockwise per-channel W8A8 without fused SiLU or SWAP_AB"
+            )
+        if A.device.type != "cuda" or not _supports_gemm1_tile(A.device.index):
+            raise NotImplementedError("INT8_ACCUMULATOR requires T-Head 810E")
+        invoke = _invoke_fused_moe_triton_kernel
+    else:
+        invoke = _generic_invoke
+        if "INT8_ACCUMULATOR" in config:
+            config = dict(config)
+            config.pop("INT8_ACCUMULATOR")
+    return invoke(
+        A,
+        B,
+        C,
+        A_scale,
+        B_scale,
+        topk_weights,
+        sorted_token_ids,
+        expert_ids,
+        num_tokens_post_padded,
+        mul_routed_weight,
+        top_k,
+        config,
+        compute_type,
+        use_fp8_w8a8=use_fp8_w8a8,
+        use_int8_w8a8=use_int8_w8a8,
+        use_int8_w8a16=use_int8_w8a16,
+        use_int4_w4a16=use_int4_w4a16,
+        per_channel_quant=per_channel_quant,
+        block_shape=block_shape,
+        B_bias=B_bias,
+        FUSE_SILU=FUSE_SILU,
+        direct_sum=direct_sum,
+        out_top_k=out_top_k,
+    )
+
+
+@triton.jit
+def _zero_alignment_workspace(
+    cumsum, counts, num_experts: tl.constexpr, BLOCK: tl.constexpr
+):
+    offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    tl.store(cumsum + offsets, 0, mask=offsets < num_experts + 1)
+    tl.store(counts + offsets, 0, mask=offsets < (num_experts + 1) * num_experts)
+
+
+def moe_align_block_size_triton(
+    topk_ids,
+    num_experts,
+    block_size,
+    sorted_token_ids,
+    expert_ids,
+    num_tokens_post_pad,
+):
+    from flaggems_vllm.ops.moe_align_block_size import (
+        _moe_align_block_size_triton_4stage,
+    )
+
+    if topk_ids.numel() == 0:
+        _zero_alignment_workspace[(1,)](
+            num_tokens_post_pad,
+            num_tokens_post_pad,
+            0,
+            BLOCK=256,
+        )
+        return
+
+    cumsum = torch.empty((num_experts + 1,), dtype=torch.int32, device=topk_ids.device)
+    counts = torch.empty(
+        (num_experts + 1, num_experts), dtype=torch.int32, device=topk_ids.device
+    )
+    # Small scratch initialization: fixed tile, no torch compute/copy fallback.
+    _zero_alignment_workspace[(triton.cdiv((num_experts + 1) * num_experts, 256),)](
+        cumsum,
+        counts,
+        num_experts,
+        BLOCK=256,
+    )
+    return _moe_align_block_size_triton_4stage(
+        topk_ids,
+        num_experts,
+        block_size,
+        sorted_token_ids,
+        expert_ids,
+        num_tokens_post_pad,
+        workspace=(cumsum, counts),
     )

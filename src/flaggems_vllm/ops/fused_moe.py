@@ -1387,15 +1387,8 @@ def fused_moe_kernel(
     DIRECT_SUM: tl.constexpr,
     OUT_TOP_K: tl.constexpr,
     FUSE_SILU: tl.constexpr,
-    INT8_ACCUMULATOR: tl.constexpr = False,
 ):
     """Fused MoE kernel: token × expert GEMM with quantization support and optional SiLU fusion."""
-    if INT8_ACCUMULATOR:
-        tl.static_assert(use_int8_w8a8 and per_channel_quant)
-        tl.static_assert(not use_fp8_w8a8 and not use_int8_w8a16)
-        tl.static_assert(group_k == 0 and group_n == 0)
-        tl.static_assert(not FUSE_SILU and not SWAP_AB)
-
     # Map pid to C block (grouped ordering for L2 reuse)
     pid = tl.program_id(axis=0)
     # Adjust N for FUSE_SILU. If fused, the actual output dimension is N // 2
@@ -1730,9 +1723,8 @@ def fused_moe_kernel(
 
         # Non-blockwise W8A8 down GEMM with K<=1024 has an exact INT32 sum:
         # 1024*128*128 = 2^24, so its final FP32 conversion is exact. Keep
-        # every blockwise or larger-K path on the original FP32 schedule,
-        # unless a vendor explicitly requests bounded INT8 accumulation.
-        if INT32_DOWN or INT8_ACCUMULATOR:
+        # every blockwise or larger-K path on the original FP32 schedule.
+        if INT32_DOWN:
             accumulator_i32 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.int32)
             if SWAP_AB:
                 accumulator_nm_i32 = tl.zeros(
@@ -1786,7 +1778,7 @@ def fused_moe_kernel(
                             combined_scale = a_scale[:, None] * b_scale_val[None, :]
                         accumulator += tl.dot(a, b) * combined_scale
                 else:
-                    if INT32_DOWN or INT8_ACCUMULATOR:
+                    if INT32_DOWN:
                         if SWAP_AB:
                             accumulator_nm_i32 = tl.dot(
                                 tl.trans(b),
@@ -1818,7 +1810,7 @@ def fused_moe_kernel(
             a_ptrs += BLOCK_SIZE_K * stride_ak
             b_ptrs += BLOCK_SIZE_K * stride_bk
 
-        if INT32_DOWN or INT8_ACCUMULATOR:
+        if INT32_DOWN:
             if SWAP_AB:
                 accumulator = tl.trans(accumulator_nm_i32).to(tl.float32)
             else:
@@ -2018,8 +2010,6 @@ def invoke_fused_moe_triton_kernel(
     HAS_BIAS = B_bias is not None
 
     config = config.copy()
-    if config.get("INT8_ACCUMULATOR", False) and B.size(2) * 128 * 128 > 2147483647:
-        raise ValueError("INT8_ACCUMULATOR requires K * 128 * 128 <= INT32_MAX")
     config["SPLIT_K"] = 1
     BLOCK_SIZE_K = config.pop("BLOCK_SIZE_K")
     if block_shape is not None:
