@@ -7,6 +7,8 @@ import torch
 
 import flaggems_vllm
 
+from .conftest import QUICK_MODE
+
 moe = importlib.import_module("flaggems_vllm.ops.fused_moe")
 pytestmark = [
     pytest.mark.fused_moe,
@@ -192,20 +194,31 @@ def test_quant_full_and_mixed_dispatch():
 
 @pytest.mark.parametrize(
     "shape",
-    [
-        (0, 4, 128, 384, 2),
-        (1, 4, 128, 384, 2),
-        (8, 4, 128, 384, 2),
-        (32, 4, 128, 384, 2),
-        (32, 128, 6144, 384, 4),
-        (64, 128, 6144, 384, 4),
-        (65, 128, 6144, 384, 4),
-        (1024, 128, 6144, 384, 4),
-        (8192, 128, 6144, 384, 4),
-    ],
+    (
+        [
+            (0, 4, 128, 384, 2),
+            (1, 4, 128, 384, 2),
+            (64, 128, 6144, 384, 4),
+            (1024, 128, 6144, 384, 4),
+        ]
+        if QUICK_MODE
+        else [
+            (0, 4, 128, 384, 2),
+            (1, 4, 128, 384, 2),
+            (8, 4, 128, 384, 2),
+            (32, 4, 128, 384, 2),
+            (32, 128, 6144, 384, 4),
+            (64, 128, 6144, 384, 4),
+            (65, 128, 6144, 384, 4),
+            (1024, 128, 6144, 384, 4),
+            (8192, 128, 6144, 384, 4),
+        ]
+    ),
 )
-@pytest.mark.parametrize("scale_rank", [2, 3])
-@pytest.mark.parametrize("route_dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("scale_rank", [2] if QUICK_MODE else [2, 3])
+@pytest.mark.parametrize(
+    "route_dtype", [torch.float32] if QUICK_MODE else [torch.float32, torch.bfloat16]
+)
 def test_w8a8_experts_graph(shape, scale_rank, route_dtype):
     """Exercise the complete API on every backend with the same integer oracle.
 

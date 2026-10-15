@@ -1414,7 +1414,7 @@ def invoke_fused_moe_triton_kernel(
             raise ValueError(
                 "INT8_ACCUMULATOR requires non-blockwise per-channel W8A8 without fused SiLU or SWAP_AB"
             )
-        if A.device.type != "cuda" or not _supports_gemm1_tile(A.device.index):
+        if A.device.type != "cuda" or not _supports_int8_moe(A.device.index):
             raise NotImplementedError("INT8_ACCUMULATOR requires T-Head 810E")
     assert topk_weights is not None or not mul_routed_weight
     assert topk_weights is None or topk_weights.stride(1) == 1
@@ -2204,39 +2204,8 @@ def outplace_fused_experts(
     )
 
 
-_EXPECTED_CONFIGS = {
-    64: {
-        "BLOCK_SIZE_M": 32,
-        "BLOCK_SIZE_N": 64,
-        "BLOCK_SIZE_K": 128,
-        "GROUP_SIZE_M": 1,
-        "SPLIT_K": 1,
-        "num_warps": 4,
-        "num_stages": 3,
-    },
-    1024: {
-        "BLOCK_SIZE_M": 128,
-        "BLOCK_SIZE_N": 128,
-        "BLOCK_SIZE_K": 64,
-        "GROUP_SIZE_M": 1,
-        "SPLIT_K": 1,
-        "num_warps": 8,
-        "num_stages": 3,
-    },
-    8192: {
-        "BLOCK_SIZE_M": 128,
-        "BLOCK_SIZE_N": 128,
-        "BLOCK_SIZE_K": 64,
-        "GROUP_SIZE_M": 1,
-        "SPLIT_K": 1,
-        "num_warps": 8,
-        "num_stages": 3,
-    },
-}
-
-
 @functools.lru_cache(maxsize=16)
-def _supports_gemm1_tile(device_index: int) -> bool:
+def _supports_int8_moe(device_index: int) -> bool:
     props = torch.cuda.get_device_properties(device_index)
     supported = (
         props.name == "PPU-ZW810E"
@@ -2245,18 +2214,6 @@ def _supports_gemm1_tile(device_index: int) -> bool:
         and props.warp_size == 32
     )
     return supported
-
-
-def _matches_gemm1_tile(config, tokens):
-    expected = _EXPECTED_CONFIGS.get(tokens)
-    if expected is None:
-        return False
-    normalized = dict(config)
-    for flag in ("SWAP_AB", "USE_INT32_OFFSETS", "PAIR_GATE_UP_DOT"):
-        if not normalized.get(flag, False):
-            normalized.pop(flag, None)
-    normalized.setdefault("SPLIT_K", 1)
-    return normalized == expected
 
 
 def _gemm1_config(
@@ -2318,12 +2275,10 @@ def _gemm1_config(
         )
     ):
         return config
-    if not _supports_gemm1_tile(A.device.index):
+    if not _supports_int8_moe(A.device.index):
         return config
     tuned = dict(config)
     tuned["INT8_ACCUMULATOR"] = True
-    if _matches_gemm1_tile(config, m):
-        tuned["BLOCK_SIZE_K"] = 256
     return tuned
 
 
@@ -2398,4 +2353,4 @@ def _use_gemm2_int32(
         )
     ):
         return False
-    return _supports_gemm1_tile(A.device.index)
+    return _supports_int8_moe(A.device.index)
