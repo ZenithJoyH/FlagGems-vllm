@@ -95,7 +95,7 @@ class FusedMoEINT8Benchmark(base.Benchmark):
             (128, 8, 4096, 14336, 2),
             (256, 8, 4096, 14336, 2),
             (512, 8, 4096, 14336, 2),
-            # Per-channel W8A8 shapes; shared across supported backends.
+            # MiniMax-M3.1 per-channel W8A8 shapes (TP=8 shard).
             (64, 128, 6144, 384, 4),
             (1024, 128, 6144, 384, 4),
             (8192, 128, 6144, 384, 4),
