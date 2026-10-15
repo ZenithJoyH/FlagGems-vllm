@@ -13,14 +13,9 @@
 # limitations under the License.
 
 import inspect
-import itertools
-import json
-import statistics
 
 import pytest
 import torch
-import triton
-from triton import language as tl
 
 import flaggems_vllm
 
@@ -100,6 +95,12 @@ class FusedMoEINT8Benchmark(base.Benchmark):
             (128, 8, 4096, 14336, 2),
             (256, 8, 4096, 14336, 2),
             (512, 8, 4096, 14336, 2),
+            # Per-channel W8A8 shapes; shared across supported backends.
+            (32, 128, 6144, 384, 4),
+            (64, 128, 6144, 384, 4),
+            (65, 128, 6144, 384, 4),
+            (1024, 128, 6144, 384, 4),
+            (8192, 128, 6144, 384, 4),
             # DeepSeek-V3-like shapes (TP=8 shard)
             (1, 256, 7168, 2048, 8),
             (4, 256, 7168, 2048, 8),
@@ -214,7 +215,7 @@ def _gems_fused_moe_int8_wrapper(
     hidden_states, w1, w2, topk_weights, topk_ids, w1_scale, w2_scale
 ):
     """Wrapper to call FlagGems fused_experts_impl with INT8."""
-    return flaggems_vllm.ops_experts_impl(
+    return flaggems_vllm.fused_experts_impl(
         hidden_states,
         w1,
         w2,
@@ -245,203 +246,3 @@ def test_fused_experts_impl_int8():
     )
     bench.set_gems(_gems_fused_moe_int8_wrapper)
     bench.run()
-
-
-@pytest.mark.fused_moe
-@pytest.mark.skipif(flaggems_vllm.vendor_name != "thead", reason="810E benchmark")
-@pytest.mark.parametrize("tokens", [32, 64, 65, 1024, 8192])
-def test_fused_moe_int8_thead_gemm1(tokens):
-    from flaggems_vllm.ops.fused_moe import invoke_fused_moe_triton_kernel as baseline
-    from flaggems_vllm.runtime.backend._thead.ops.fused_moe import (
-        _EXPECTED_CONFIGS,
-        _supports_gemm1_tile,
-    )
-    from flaggems_vllm.runtime.backend._thead.ops.fused_moe import (
-        invoke_fused_moe_triton_kernel as candidate,
-    )
-    from flaggems_vllm.runtime.backend._thead.ops.fused_moe import (
-        moe_align_block_size_triton,
-    )
-
-    if not _supports_gemm1_tile(torch.cuda.current_device()):
-        pytest.skip("Requires the measured 810E capability")
-    torch.manual_seed(42)
-    a = torch.randint(-128, 128, (tokens, 6144), dtype=torch.int8, device="cuda")
-    b = torch.randint(-128, 128, (128, 768, 6144), dtype=torch.int8, device="cuda")
-    a_scale = torch.full((tokens, 1), 0.03125, device="cuda")
-    b_scale = torch.full((128, 768, 1), 0.015625, device="cuda")
-    out = torch.empty((tokens, 4, 768), dtype=torch.bfloat16, device="cuda")
-    ids = (torch.arange(tokens * 4, dtype=torch.int32, device="cuda") % 128).reshape(
-        tokens, 4
-    )
-    config = dict(_EXPECTED_CONFIGS.get(tokens, _EXPECTED_CONFIGS[64]))
-    bm = config["BLOCK_SIZE_M"]
-    size = min(ids.numel() * bm, ids.numel() + 128 * (bm - 1))
-    sorted_ids = torch.empty(size, dtype=torch.int32, device="cuda")
-    expert_ids = torch.empty(triton.cdiv(size, bm), dtype=torch.int32, device="cuda")
-    padded = torch.empty(1, dtype=torch.int32, device="cuda")
-    moe_align_block_size_triton(ids, 128, bm, sorted_ids, expert_ids, padded)
-
-    def launch(op, cfg):
-        op(
-            a,
-            b,
-            out,
-            a_scale,
-            b_scale,
-            None,
-            sorted_ids,
-            expert_ids,
-            padded,
-            False,
-            4,
-            cfg,
-            tl.bfloat16,
-            use_int8_w8a8=True,
-            per_channel_quant=True,
-        )
-
-    variants = {
-        "generic": (baseline, dict(config)),
-        # Explicit INT32 preserves the original tile and isolates the K change
-        # from both the backend switch and the accumulation precision fix.
-        "vendor_int32_original_k": (candidate, dict(config, INT8_ACCUMULATOR=True)),
-        "candidate": (candidate, dict(config)),
-    }
-    for op, cfg in variants.values():
-        launch(op, cfg)
-    torch.cuda.synchronize()
-    timings = {name: [] for name in variants}
-    # All six orders balance each variant's position and predecessor.
-    for order in itertools.permutations(variants):
-        for name in order:
-            op, cfg = variants[name]
-            timings[name].append(
-                triton.testing.do_bench_cudagraph(lambda: launch(op, cfg), rep=100)
-            )
-    medians = {name: statistics.median(values) for name, values in timings.items()}
-    print(
-        json.dumps(
-            {
-                "tokens": tokens,
-                "scope": "GEMM1 only",
-                "unit": "ms",
-                "median_ms": medians,
-                "combined_speedup": medians["generic"] / medians["candidate"],
-                "tile_speedup": medians["vendor_int32_original_k"]
-                / medians["candidate"],
-                "counterbalanced_timings": timings,
-            }
-        )
-    )
-
-
-@pytest.mark.fused_moe
-@pytest.mark.skipif(
-    flaggems_vllm.vendor_name != "thead", reason="810E GEMM2 integration benchmark"
-)
-@pytest.mark.parametrize("tokens", [64, 1024, 8192])
-@pytest.mark.parametrize("scope", ["gemm2", "full_moe"])
-def test_fused_moe_int8_thead_gemm2_integration(tokens, scope):
-    from flaggems_vllm.runtime.backend._thead.ops import fused_moe as vendor
-
-    if not vendor._supports_gemm1_tile(torch.cuda.current_device()):
-        pytest.skip("Requires 810E")
-    torch.manual_seed(81)
-    ids = (torch.arange(tokens * 4, dtype=torch.int32, device="cuda") % 128).reshape(
-        tokens, 4
-    )
-    weights = torch.full((tokens, 4), 0.25, device="cuda")
-    b = torch.randint(-4, 5, (128, 6144, 384), dtype=torch.int8, device="cuda")
-    b_scale = torch.full((128, 6144), 0.015625, device="cuda")
-    config = vendor.get_default_config(
-        tokens, 128, 6144, 384, 4, "bf16", gemm_stage="gemm2"
-    )
-    bm = config["BLOCK_SIZE_M"]
-    size = ids.numel() + 128 * (bm - 1)
-    sorted_ids = torch.empty(size, dtype=torch.int32, device="cuda")
-    expert_ids = torch.empty(triton.cdiv(size, bm), dtype=torch.int32, device="cuda")
-    padded = torch.empty(1, dtype=torch.int32, device="cuda")
-    vendor.moe_align_block_size_triton(ids, 128, bm, sorted_ids, expert_ids, padded)
-    if scope == "gemm2":
-        a = torch.randint(-128, 128, (tokens * 4, 384), dtype=torch.int8, device="cuda")
-        a_scale = torch.full((tokens * 4, 1), 0.03125, device="cuda")
-        out = torch.empty((tokens, 4, 6144), dtype=torch.bfloat16, device="cuda")
-
-        def run():
-            vendor._invoke_fused_moe_triton_kernel(
-                a,
-                b,
-                out,
-                a_scale,
-                b_scale,
-                weights,
-                sorted_ids,
-                expert_ids,
-                padded,
-                True,
-                1,
-                config,
-                tl.bfloat16,
-                use_int8_w8a8=True,
-                per_channel_quant=True,
-            )
-            return out
-
-    else:
-        hidden = torch.randn((tokens, 6144), dtype=torch.bfloat16, device="cuda")
-        w1 = torch.randint(-4, 5, (128, 768, 6144), dtype=torch.int8, device="cuda")
-        w1_scale = torch.full((128, 768), 0.015625, device="cuda")
-
-        def run():
-            return flaggems_vllm.fused_experts_impl(
-                hidden,
-                w1,
-                b,
-                weights,
-                ids,
-                use_int8_w8a8=True,
-                per_channel_quant=True,
-                w1_scale=w1_scale,
-                w2_scale=b_scale,
-            )
-
-    selector = vendor._use_gemm2_int32
-    disabled = lambda *a, **k: False
-
-    def launch(name):
-        # This process-local switch changes only internal GEMM2 selection. Both
-        # variants use the same retained G1 policy and existing vendor tiles.
-        vendor._use_gemm2_int32 = selector if name == "candidate" else disabled
-        try:
-            return run()
-        finally:
-            vendor._use_gemm2_int32 = selector
-
-    before = launch("baseline").clone()
-    after = launch("candidate")
-    torch.cuda.synchronize()
-    torch.testing.assert_close(after, before, rtol=0, atol=0)
-    timings = {"baseline": [], "candidate": []}
-    for trial in range(6):
-        order = (
-            ("baseline", "candidate") if trial % 2 == 0 else ("candidate", "baseline")
-        )
-        for name in order:
-            timings[name].append(
-                triton.testing.do_bench_cudagraph(lambda: launch(name), rep=100)
-            )
-    medians = {name: statistics.median(values) for name, values in timings.items()}
-    print(
-        json.dumps(
-            {
-                "tokens": tokens,
-                "scope": scope,
-                "unit": "ms",
-                "median_ms": medians,
-                "speedup": medians["baseline"] / medians["candidate"],
-                "selected_gemm2": tokens in (1024, 8192),
-                "paired_timings": timings,
-            }
-        )
-    )

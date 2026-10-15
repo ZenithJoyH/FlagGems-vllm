@@ -1300,7 +1300,7 @@ def invoke_fused_moe_wna16_triton_kernel(
     )
 
 
-def _invoke_fused_moe_triton_kernel(
+def invoke_fused_moe_triton_kernel(
     A: torch.Tensor,
     B: torch.Tensor,
     C: torch.Tensor,
@@ -1637,7 +1637,7 @@ def dispatch_fused_moe_kernel(
             block_shape,
         )
     else:
-        _invoke_fused_moe_triton_kernel(
+        invoke_fused_moe_triton_kernel(
             A,
             B,
             C,
@@ -2399,139 +2399,3 @@ def _use_gemm2_int32(
     ):
         return False
     return _supports_gemm1_tile(A.device.index)
-
-
-def invoke_fused_moe_triton_kernel(
-    A: torch.Tensor,
-    B: torch.Tensor,
-    C: torch.Tensor,
-    A_scale: Optional[torch.Tensor],
-    B_scale: Optional[torch.Tensor],
-    topk_weights: Optional[torch.Tensor],
-    sorted_token_ids: torch.Tensor,
-    expert_ids: torch.Tensor,
-    num_tokens_post_padded: torch.Tensor,
-    mul_routed_weight: bool,
-    top_k: int,
-    config: dict[str, Any],
-    compute_type: tl.dtype,
-    use_fp8_w8a8: bool = False,
-    use_int8_w8a8: bool = False,
-    use_int8_w8a16: bool = False,
-    use_int4_w4a16: bool = False,
-    per_channel_quant: bool = False,
-    block_shape: Optional[list[int]] = None,
-    B_bias: torch.Tensor | None = None,
-    FUSE_SILU: bool = False,
-    direct_sum: bool = False,
-    out_top_k: int = 1,
-) -> None:
-    # Vendor modules may be discovered while the generic package imports.
-    from flaggems_vllm.ops.fused_moe import (
-        invoke_fused_moe_triton_kernel as _generic_invoke,
-    )
-
-    config = _gemm1_config(
-        A,
-        B,
-        C,
-        A_scale,
-        B_scale,
-        top_k,
-        config,
-        compute_type,
-        use_fp8_w8a8,
-        use_int8_w8a8,
-        use_int8_w8a16,
-        use_int4_w4a16,
-        per_channel_quant,
-        block_shape,
-        B_bias,
-        FUSE_SILU,
-        direct_sum,
-        mul_routed_weight,
-    )
-    if config.get("INT8_ACCUMULATOR", False):
-        invoke = _invoke_fused_moe_triton_kernel
-    else:
-        invoke = _generic_invoke
-        if "INT8_ACCUMULATOR" in config:
-            config = dict(config)
-            config.pop("INT8_ACCUMULATOR")
-    return invoke(
-        A,
-        B,
-        C,
-        A_scale,
-        B_scale,
-        topk_weights,
-        sorted_token_ids,
-        expert_ids,
-        num_tokens_post_padded,
-        mul_routed_weight,
-        top_k,
-        config,
-        compute_type,
-        use_fp8_w8a8=use_fp8_w8a8,
-        use_int8_w8a8=use_int8_w8a8,
-        use_int8_w8a16=use_int8_w8a16,
-        use_int4_w4a16=use_int4_w4a16,
-        per_channel_quant=per_channel_quant,
-        block_shape=block_shape,
-        B_bias=B_bias,
-        FUSE_SILU=FUSE_SILU,
-        direct_sum=direct_sum,
-        out_top_k=out_top_k,
-    )
-
-
-@triton.jit
-def _zero_alignment_workspace(
-    cumsum, counts, num_experts: tl.constexpr, BLOCK: tl.constexpr
-):
-    offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-    tl.store(cumsum + offsets, 0, mask=offsets < num_experts + 1)
-    tl.store(counts + offsets, 0, mask=offsets < (num_experts + 1) * num_experts)
-
-
-def moe_align_block_size_triton(
-    topk_ids,
-    num_experts,
-    block_size,
-    sorted_token_ids,
-    expert_ids,
-    num_tokens_post_pad,
-):
-    from flaggems_vllm.ops.moe_align_block_size import (
-        _moe_align_block_size_triton_4stage,
-    )
-
-    if topk_ids.numel() == 0:
-        _zero_alignment_workspace[(1,)](
-            num_tokens_post_pad,
-            num_tokens_post_pad,
-            0,
-            BLOCK=256,
-        )
-        return
-
-    cumsum = torch.empty((num_experts + 1,), dtype=torch.int32, device=topk_ids.device)
-    counts = torch.empty(
-        (num_experts + 1, num_experts), dtype=torch.int32, device=topk_ids.device
-    )
-    # Small scratch initialization: fixed tile, no torch compute/copy fallback.
-    _zero_alignment_workspace[(triton.cdiv((num_experts + 1) * num_experts, 256),)](
-        cumsum,
-        counts,
-        num_experts,
-        BLOCK=256,
-    )
-    return _moe_align_block_size_triton_4stage(
-        topk_ids,
-        num_experts,
-        block_size,
-        sorted_token_ids,
-        expert_ids,
-        num_tokens_post_pad,
-        workspace=(cumsum, counts),
-    )
