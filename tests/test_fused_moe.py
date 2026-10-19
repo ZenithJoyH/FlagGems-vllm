@@ -54,7 +54,6 @@ def test_quant_and_oai_quant(dtype, shape, monkeypatch):
     torch.testing.assert_close(s, refs, rtol=0, atol=0)
 
 
-@pytest.mark.fused_moe
 def test_quant_nan_halfway_graph(monkeypatch):
     monkeypatch.setattr(moe, "_int8_quant_dispatch_policy", lambda: False)
     x = torch.tensor(
@@ -76,7 +75,6 @@ def test_quant_nan_halfway_graph(monkeypatch):
     torch.testing.assert_close(s, rs, rtol=0, atol=0)
 
 
-@pytest.mark.fused_moe
 def test_oai_parameter_validation():
     x = torch.randn((2, 768), device="cuda", dtype=torch.bfloat16)
     out = torch.empty((2, 384), device="cuda", dtype=torch.bfloat16)
@@ -96,7 +94,6 @@ def test_oai_parameter_validation():
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("m,i", [(1, 384), (7, 768), (32, 1536)])
 @pytest.mark.parametrize("mode", ["off", "quant_oai"])
-@pytest.mark.fused_moe
 def test_w8a8_oai_experts(dtype, m, i, mode, monkeypatch):
     monkeypatch.setattr(moe, "_W8A8_QUANT_FUSION_MODE", mode)
     monkeypatch.setattr(moe, "_int8_quant_dispatch_policy", lambda: False)
@@ -173,7 +170,6 @@ def test_w8a8_oai_experts(dtype, m, i, mode, monkeypatch):
     )
 
 
-@pytest.mark.fused_moe
 def test_quant_full_and_mixed_dispatch():
     import flag_gems
 
