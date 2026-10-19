@@ -581,6 +581,12 @@ def dequant_mxfp6(
 # Activation quantization helpers
 
 
+@functools.lru_cache(maxsize=8)
+def _get_shared_memory_limit(device_index: int) -> int:
+    """Cache the actual per-block shared-memory limit for each MetaX device."""
+    return torch_device_fn.get_device_properties(device_index).shared_memory_per_block
+
+
 @functools.lru_cache(maxsize=1)
 def _get_device_name() -> str:
     """Return the normalised device name (spaces replaced by underscores).
@@ -613,19 +619,79 @@ def _is_h20() -> bool:
     return "H20" in _get_device_name().split("_")
 
 
+# Retained MetaX E=128, logical N=384 half-precision tuning.
+# Columns: BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, GROUP_SIZE_M,
+#          num_warps, num_stages. Tables are materialized once at import.
+_TUNED_HALF_MOE_CONFIGS = {
+    stage: {
+        m: dict(
+            zip(
+                (
+                    "BLOCK_SIZE_M",
+                    "BLOCK_SIZE_N",
+                    "BLOCK_SIZE_K",
+                    "GROUP_SIZE_M",
+                    "num_warps",
+                    "num_stages",
+                ),
+                params,
+            )
+        )
+        for m, params in table.items()
+    }
+    for stage, table in {
+        "gemm1": {
+            7: (16, 128, 64, 1, 4, 1),
+            8: (16, 64, 128, 1, 4, 3),
+            32: (16, 64, 128, 1, 4, 3),
+            64: (16, 64, 128, 1, 4, 3),
+            65: (16, 128, 32, 4, 2, 3),
+            1024: (128, 128, 64, 1, 4, 1),
+            4095: (128, 128, 64, 1, 4, 1),
+            4096: (128, 128, 64, 1, 8, 1),
+            7393: (128, 128, 64, 1, 8, 1),
+            8192: (128, 128, 64, 1, 8, 1),
+            8193: (128, 128, 64, 8, 4, 1),
+        },
+        "gemm2": {
+            7: (16, 128, 64, 1, 4, 1),
+            8: (16, 64, 128, 1, 4, 1),
+            32: (16, 64, 128, 1, 4, 1),
+            64: (16, 64, 128, 1, 4, 1),
+            65: (16, 128, 32, 4, 2, 3),
+            1024: (128, 128, 64, 1, 4, 1),
+            7393: (128, 128, 64, 8, 4, 1),
+            8192: (128, 128, 64, 8, 4, 1),
+        },
+    }.items()
+}
+
+
 def get_moe_configs(
     E: int,
     N: int,
     dtype: str | None,
     block_n: int | None = None,
     block_k: int | None = None,
+    *,
+    gemm_stage: str = "gemm1",
 ) -> dict[int, Any] | None:
     """
     Return optimized configurations for the fused MoE kernel.
 
-    Looks up pre-tuned configs from the embedded table (ported from vLLM)
-    for the current GPU device. Returns None if no matching config is found.
+    Use local stage tuning for the measured half-precision shape, otherwise
+    look up the original embedded table for the current GPU device.
     """
+    if bool(int(os.getenv("VLLM_BATCH_INVARIANT", "0"))):
+        return None
+    if (
+        E == 128
+        and N == 384
+        and dtype in (None, "fp16", "bf16")
+        and not (block_n and block_k)
+    ):
+        return _TUNED_HALF_MOE_CONFIGS[gemm_stage]
+
     device_name = _get_device_name()
     embedded_configs, _ = get_embedded_moe_configs()
     device_table = embedded_configs.get(device_name)
@@ -672,7 +738,9 @@ def try_get_optimal_moe_config(
         config_n = config_n * 2
     block_n = block_shape[0] if block_shape else 0
     block_k = block_shape[1] if block_shape else 0
-    configs = get_moe_configs(E, config_n, dtype, block_n, block_k)
+    configs = get_moe_configs(
+        E, config_n, dtype, block_n, block_k, gemm_stage=gemm_stage
+    )
     if configs:
         config = configs[min(configs.keys(), key=lambda x: abs(x - M))].copy()
         is_embedded = True
@@ -887,8 +955,11 @@ def _generic_get_default_config(
             group_m = 2
             num_stages = 4
 
-        smem_per_stage = (block_m * block_k + block_k * block_n) * 2
-        while num_stages > 2 and smem_per_stage * num_stages > 200_000:
+        # The paired gate/up path keeps two weight tiles in shared memory.
+        weight_tiles = 2 if use_gemm1_fast_path else 1
+        smem_per_stage = (block_m * block_k + weight_tiles * block_k * block_n) * 2
+        smem_limit = _get_shared_memory_limit(torch_device_fn.current_device())
+        while num_stages > 1 and smem_per_stage * num_stages > smem_limit:
             num_stages -= 1
 
         config = {
@@ -900,7 +971,9 @@ def _generic_get_default_config(
             "num_stages": num_stages,
         }
         if use_gemm1_fast_path:
-            config["PAIR_GATE_UP_DOT"] = True
+            # The paired layout needs over 64 KiB even with one stage.
+            # Keep the regular fused-SiLU kernel on devices with that limit.
+            config["PAIR_GATE_UP_DOT"] = smem_limit > 64 * 1024
     else:
         tokens_per_expert = M // max(E, 1)
 
@@ -939,8 +1012,10 @@ def _generic_get_default_config(
         num_warps = 4 if M <= 128 else 8
         num_stages = 3
 
-        smem_per_stage = (block_m * block_k + block_k * block_n) * 2
-        while num_stages > 2 and smem_per_stage * num_stages > 200_000:
+        element_bytes = 4 if dtype == "float32" else 2
+        smem_per_stage = (block_m * block_k + block_k * block_n) * element_bytes
+        smem_limit = _get_shared_memory_limit(torch_device_fn.current_device())
+        while num_stages > 1 and smem_per_stage * num_stages > smem_limit:
             num_stages -= 1
 
         config = {
@@ -2585,7 +2660,7 @@ def fused_experts_impl(
 
         # 6. Select GEMM2 config and output buffer/reduction path
         gemm2_config = base_config
-        if use_half_gemm_fast_paths:
+        if use_half_gemm_fast_paths or is_embedded_config:
             gemm2_config, _ = get_moe_config(
                 tokens_in_chunk,
                 gemm_stage="gemm2",
