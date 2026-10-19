@@ -347,7 +347,14 @@ def test_qsa_tile_floor(monkeypatch, group, splits, vendor):
             torch.empty((1, group, splits), dtype=torch.float32, device="cpu"),
         )
     result = function(
-        query, cache, cache, indices, table, requests, out=out, split_workspace=workspace
+        query,
+        cache,
+        cache,
+        indices,
+        table,
+        requests,
+        out=out,
+        split_workspace=workspace,
     )
     assert result is out
     expected_m = max(16 if vendor else 8, 1 << (group - 1).bit_length())
