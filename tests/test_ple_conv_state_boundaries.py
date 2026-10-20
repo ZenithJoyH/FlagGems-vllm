@@ -3,8 +3,9 @@
 
 import pytest
 import torch
-from flaggems_vllm.ops.qwen4.ple_conv import ple_short_conv_
 from test_ple_conv import inputs
+
+from flaggems_vllm.ops.qwen4.ple_conv import ple_short_conv_
 
 DTYPES = [torch.bfloat16, torch.float16, torch.float32]
 MODES = ["decode", "prefill", "spec"]
