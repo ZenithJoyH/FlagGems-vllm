@@ -162,7 +162,8 @@ def _ple_conv_state_kernel(
     else:
         begin, end = req, req + 1
     length = end - begin
-    row = tl.load(indices + req * si)
+    # Promote before multiplying the cache row stride, which can exceed int32.
+    row = tl.load(indices + req * si).to(tl.int64)
     valid = (row != null_id) & (row >= 0) & (row < state_rows) & (length > 0)
     has_history = valid
     if HAS_INITIAL:
