@@ -190,11 +190,11 @@ def _ple_conv_state_kernel(
         mask=mask & has_history & (pos[None, :] < 0) & (old_pos[None, :] >= 0),
         other=0,
     )
-    # Every CTA reads its complete old channel slice before writing it; no
-    # other CTA updates those channels. Output readers finished in prior launch.
     result = (values.to(x.dtype.element_ty) + old.to(x.dtype.element_ty)).to(
         state.dtype.element_ty
     )
+    # History spans warps: finish every old-state load before any in-place write.
+    tl.debug_barrier()
     tl.store(state + row * ss0 + c[:, None] * ss1 + s[None, :] * ss2, result, mask=mask)
 
 
