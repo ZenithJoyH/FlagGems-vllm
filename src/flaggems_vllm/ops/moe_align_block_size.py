@@ -20,17 +20,9 @@ import torch
 import triton
 import triton.language as tl
 
-from flaggems_vllm.utils import has_triton_tle_attrs, libentry, libtuner
+from flaggems_vllm.utils import has_triton_tle, libentry, libtuner
 
-_TLE_REQUIRED_APIS = (
-    "device_mesh",
-    "distributed_barrier",
-    "gpu.alloc",
-    "gpu.local_ptr",
-    "gpu.smem",
-)
-
-if has_triton_tle_attrs(_TLE_REQUIRED_APIS, 3, 6, 0):
+if has_triton_tle(3, 6, 0):
     try:
         import triton.experimental.tle.language as tle
         import triton.experimental.tle.language.gpu as tleg
@@ -44,12 +36,6 @@ else:
     tle = None
     tleg = None
     HAS_TLE = False
-
-HAS_TLE_CLUSTER = HAS_TLE and has_triton_tle_attrs(("remote", "shard_id"), 3, 6, 0)
-# API presence does not guarantee compiler support. Remember only explicit
-# unsupported-TLE diagnostics, scoped to this operator and input device.
-_TLE_UNSUPPORTED_DEVICES = set()
-_TLE_CLUSTER_UNSUPPORTED_DEVICES = set()
 
 
 logger = logging.getLogger(__name__)
@@ -622,11 +608,22 @@ def moe_align_block_size_triton(
     numel_expert_ids = expert_ids.numel()
     block_expert_tle = triton.next_power_of_2(num_experts)
 
+    # Query the current compiler target at dispatch; older TLE versions fall back.
+    is_tle_supported = getattr(tle, "is_tle_supported", None)
     if (
         HAS_TLE
         and topk_ids.is_cuda
         and block_expert_tle <= 1024
-        and topk_ids.device not in _TLE_UNSUPPORTED_DEVICES
+        and callable(is_tle_supported)
+        and all(
+            is_tle_supported(api)
+            for api in (
+                "device_mesh",
+                "distributed_barrier",
+                "gpu.alloc",
+                "gpu.local_ptr",
+            )
+        )
     ):
         block_tokens_taf, _ = _pick_tle_atomic_fused_launch_params(numel, num_experts)
         experts_per_shard = ceil_div(num_experts, TLE_CLUSTER_SIZE)
@@ -666,16 +663,10 @@ def moe_align_block_size_triton(
                     return True
                 except Exception as ex:
                     msg = str(ex).lower()
-                    if "unsupported tle feature" in msg and "tle." in msg:
-                        _TLE_UNSUPPORTED_DEVICES.add(topk_ids.device)
                     if "no allocator was set" in msg:
                         _install_triton_default_allocator(topk_ids.device)
                         continue
-                    if (
-                        topk_ids.device in _TLE_UNSUPPORTED_DEVICES
-                        or num_blocks <= 1
-                        or "cooperative" not in msg
-                    ):
+                    if num_blocks <= 1 or "cooperative" not in msg:
                         logger.debug(
                             "TLE atomic fused launch failed, fallback to triton: %s",
                             ex,
@@ -685,10 +676,9 @@ def moe_align_block_size_triton(
                     experts_per_prog = ceil_div(num_experts, num_blocks)
 
         if (
-            HAS_TLE_CLUSTER
-            and topk_ids.device not in _TLE_CLUSTER_UNSUPPORTED_DEVICES
-            and num_tokens < TLE_BIG_TOKEN_THRESHOLD_TOKENS
+            num_tokens < TLE_BIG_TOKEN_THRESHOLD_TOKENS
             and _supports_tle_cluster_remote()
+            and all(is_tle_supported(api) for api in ("remote", "shard_id"))
         ):
             try:
                 moe_align_block_size_tle_cluster_fused[(1,)](
@@ -708,9 +698,6 @@ def moe_align_block_size_triton(
                 )
                 return
             except Exception as ex:
-                msg = str(ex).lower()
-                if "unsupported tle feature" in msg and "tle." in msg:
-                    _TLE_CLUSTER_UNSUPPORTED_DEVICES.add(topk_ids.device)
                 logger.debug(
                     "TLE cluster fused launch failed, fallback to atomic/triton: %s",
                     ex,
