@@ -12,16 +12,164 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
+from types import SimpleNamespace
+
 import pytest
 import torch
 
 import flaggems_vllm
 from flaggems_vllm.ops.moe_align_block_size import (
+    moe_align_block_size_no_tle,
     moe_align_block_size_singleton,
     moe_align_block_size_small_grouped,
 )
 
 from . import accuracy_utils as utils
+
+
+@pytest.mark.moe_align_block_size_triton
+@pytest.mark.parametrize(
+    "vendor,has_tle,is_cuda,num_experts,tle_failure,expected_tle",
+    [
+        ("thead", True, True, 512, False, False),
+        ("thead", True, True, 1024, True, False),
+        ("nvidia", True, True, 512, False, True),
+        ("nvidia", True, True, 512, True, True),
+        ("nvidia", False, True, 512, False, False),
+        ("nvidia", True, False, 512, False, False),
+        ("nvidia", True, True, 1025, False, False),
+    ],
+)
+def test_moe_align_tle_backend_dispatch(
+    monkeypatch, vendor, has_tle, is_cuda, num_experts, tle_failure, expected_tle
+):
+    """Check backend selection without allocating tensors or launching kernels."""
+    module = importlib.import_module("flaggems_vllm.ops.moe_align_block_size")
+    calls = []
+
+    class Kernel:
+        def __init__(self, name):
+            self.name = name
+
+        def __getitem__(self, grid):
+            def launch(*args, **kwargs):
+                calls.append(self.name)
+                if self.name == "tle" and tle_failure:
+                    raise RuntimeError("unsupported TLE feature")
+
+            return launch
+
+    topk_ids = SimpleNamespace(
+        numel=lambda: 1280,
+        ndim=2,
+        shape=(128, 10),
+        is_cuda=is_cuda,
+        device="cuda" if is_cuda else "cpu",
+    )
+    sorted_ids = SimpleNamespace(numel=lambda: 1280 + num_experts * 15)
+    expert_ids = SimpleNamespace(numel=lambda: (1280 + num_experts * 15) // 16)
+    monkeypatch.setattr(module, "device", SimpleNamespace(vendor_name=vendor))
+    monkeypatch.setattr(module, "HAS_TLE", has_tle)
+    monkeypatch.setattr(module, "_supports_tle_cluster_remote", lambda: False)
+    monkeypatch.setattr(module, "_block_mesh", lambda _: None)
+    monkeypatch.setattr(module, "_pick_tle_atomic_fused_num_blocks", lambda *args: 1)
+    monkeypatch.setattr(module.torch, "zeros", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        module, "moe_align_block_size_tle_atomic_fused_coop", Kernel("tle")
+    )
+    for stage in ["stage1", "stage2", "stage2_vec", "stage3", "stage4"]:
+        monkeypatch.setattr(module, f"moe_align_block_size_{stage}", Kernel(stage))
+
+    # Repeated unsupported calls must continue to bypass the compiler on PPU.
+    for _ in range(2):
+        module.moe_align_block_size_triton(
+            topk_ids, num_experts, 16, sorted_ids, expert_ids, None
+        )
+    if expected_tle and not tle_failure:
+        expected = ["tle"]
+    else:
+        stage2 = "stage2_vec" if num_experts & (num_experts - 1) == 0 else "stage2"
+        expected = (["tle"] if expected_tle else []) + [
+            "stage1",
+            stage2,
+            "stage3",
+            "stage4",
+        ]
+    assert calls == expected * 2
+
+
+@pytest.mark.moe_align_block_size_triton
+@pytest.mark.parametrize("num_experts", [10, 250, 512])
+@pytest.mark.parametrize(
+    "num_routes,num_sorted,num_blocks",
+    [(0, 0, 0), (0, 150, 9), (1, 16, 1), (1280, 8960, 560)],
+)
+def test_moe_align_nonzero_launch_extents(
+    monkeypatch, num_experts, num_routes, num_sorted, num_blocks
+):
+    """Empty compact buffers must not produce arange(0, 0) launch constants."""
+    module = importlib.import_module("flaggems_vllm.ops.moe_align_block_size")
+    calls = []
+
+    class Kernel:
+        def __getitem__(self, grid):
+            def launch(*args, **kwargs):
+                calls.append(args)
+
+            return launch
+
+    for stage in ["stage1", "stage2", "stage2_vec", "stage3", "stage4"]:
+        monkeypatch.setattr(module, f"moe_align_block_size_{stage}", Kernel())
+    module._moe_align_block_size_triton_4stage(
+        SimpleNamespace(numel=lambda: num_routes),
+        num_experts,
+        16,
+        SimpleNamespace(numel=lambda: num_sorted),
+        SimpleNamespace(numel=lambda: num_blocks),
+        None,
+        workspace=(None, None),
+    )
+    assert len(calls) == 4
+    extents = [calls[0][4], calls[0][-2], calls[0][-1]]
+    expected = [
+        1 << (max(1, (n + num_experts - 1) // num_experts) - 1).bit_length()
+        for n in [num_routes, num_sorted, num_blocks]
+    ]
+    assert extents == expected
+
+
+@pytest.mark.moe_align_block_size_triton
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="CUDA-compatible graph required"
+)
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("num_experts,block_size", [(10, 16), (512, 64)])
+def test_moe_align_empty_compact_graph(dtype, num_experts, block_size):
+    """Exercise all three zero extents through the existing compact-buffer API."""
+    topk_ids = torch.empty((0, 10), dtype=dtype, device=flaggems_vllm.device)
+
+    def run():
+        return moe_align_block_size_no_tle(topk_ids, block_size, num_experts)
+
+    def check(result):
+        assert result[0].shape == (0,)
+        assert result[1].shape == (0,)
+        assert result[2].shape == (1,)
+        assert all(t.dtype == torch.int32 for t in result)
+        assert all(t.device == topk_ids.device for t in result)
+        assert result[2].item() == 0
+
+    check(run())
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        result = run()
+    for _ in range(3):
+        result[2].fill_(-1)
+        graph.replay()
+        torch.cuda.synchronize()
+        check(result)
 
 
 # Modified from: https://github.com/vllm-project/vllm/blob/main/tests/kernels/moe/test_moe_align_block_size.py
@@ -207,6 +355,8 @@ def _synchronize():
 @pytest.mark.parametrize(
     "topk_ids_shape",
     [
+        (0, 10),
+        (1, 10),
         (1024, 10),
         (6152, 10),
         (11575, 10),
