@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import importlib
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -29,20 +30,29 @@ from . import accuracy_utils as utils
 
 
 @pytest.mark.moe_align_block_size_triton
+@pytest.mark.parametrize("devices", [("cuda:0", "cuda:0"), ("cuda:0", "cuda:1")])
 @pytest.mark.parametrize(
-    "vendor,has_tle,is_cuda,num_experts,tle_failure,expected_tle",
+    "has_tle,is_cuda,num_experts,tle_failure,expected_tle_calls",
     [
-        ("thead", True, True, 512, False, False),
-        ("thead", True, True, 1024, True, False),
-        ("nvidia", True, True, 512, False, True),
-        ("nvidia", True, True, 512, True, True),
-        ("nvidia", False, True, 512, False, False),
-        ("nvidia", True, False, 512, False, False),
-        ("nvidia", True, True, 1025, False, False),
+        (True, True, 512, None, 2),
+        (True, True, 1024, "unsupported TLE feature: tle.distributed_barrier", 1),
+        (
+            True,
+            True,
+            512,
+            "unsupported TLE feature during cooperative launch: tle.distributed_barrier",
+            1,
+        ),
+        (True, True, 512, "ordinary compilation failure", 2),
+        (True, True, 512, "out of memory", 2),
+        (True, True, 512, "unsupported TLE feature without an API name", 2),
+        (False, True, 512, None, 0),
+        (True, False, 512, None, 0),
+        (True, True, 1025, None, 0),
     ],
 )
 def test_moe_align_tle_backend_dispatch(
-    monkeypatch, vendor, has_tle, is_cuda, num_experts, tle_failure, expected_tle
+    monkeypatch, devices, has_tle, is_cuda, num_experts, tle_failure, expected_tle_calls
 ):
     """Check backend selection without allocating tensors or launching kernels."""
     module = importlib.import_module("flaggems_vllm.ops.moe_align_block_size")
@@ -56,7 +66,7 @@ def test_moe_align_tle_backend_dispatch(
             def launch(*args, **kwargs):
                 calls.append(self.name)
                 if self.name == "tle" and tle_failure:
-                    raise RuntimeError("unsupported TLE feature")
+                    raise RuntimeError(tle_failure)
 
             return launch
 
@@ -69,11 +79,17 @@ def test_moe_align_tle_backend_dispatch(
     )
     sorted_ids = SimpleNamespace(numel=lambda: 1280 + num_experts * 15)
     expert_ids = SimpleNamespace(numel=lambda: (1280 + num_experts * 15) // 16)
-    monkeypatch.setattr(module, "device", SimpleNamespace(vendor_name=vendor))
     monkeypatch.setattr(module, "HAS_TLE", has_tle)
+    monkeypatch.setattr(module, "HAS_TLE_CLUSTER", False)
+    monkeypatch.setattr(module, "_TLE_UNSUPPORTED_DEVICES", set())
+    monkeypatch.setattr(module, "_TLE_CLUSTER_UNSUPPORTED_DEVICES", set())
     monkeypatch.setattr(module, "_supports_tle_cluster_remote", lambda: False)
     monkeypatch.setattr(module, "_block_mesh", lambda _: None)
-    monkeypatch.setattr(module, "_pick_tle_atomic_fused_num_blocks", lambda *args: 1)
+    monkeypatch.setattr(
+        module,
+        "_pick_tle_atomic_fused_num_blocks",
+        lambda *args: 4 if tle_failure and "cooperative" in tle_failure else 1,
+    )
     monkeypatch.setattr(module.torch, "zeros", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         module, "moe_align_block_size_tle_atomic_fused_coop", Kernel("tle")
@@ -81,22 +97,119 @@ def test_moe_align_tle_backend_dispatch(
     for stage in ["stage1", "stage2", "stage2_vec", "stage3", "stage4"]:
         monkeypatch.setattr(module, f"moe_align_block_size_{stage}", Kernel(stage))
 
-    # Repeated unsupported calls must continue to bypass the compiler on PPU.
-    for _ in range(2):
+    # Only an explicit compiler capability rejection suppresses later attempts.
+    for device in devices:
+        topk_ids.device = device
         module.moe_align_block_size_triton(
             topk_ids, num_experts, 16, sorted_ids, expert_ids, None
         )
-    if expected_tle and not tle_failure:
-        expected = ["tle"]
+    if expected_tle_calls == 1 and devices[0] != devices[1]:
+        expected_tle_calls = 2
+    assert calls.count("tle") == expected_tle_calls
+    if expected_tle_calls and not tle_failure:
+        assert calls == ["tle", "tle"]
     else:
-        stage2 = "stage2_vec" if num_experts & (num_experts - 1) == 0 else "stage2"
-        expected = (["tle"] if expected_tle else []) + [
+        stages = [
             "stage1",
-            stage2,
+            "stage2_vec" if num_experts & (num_experts - 1) == 0 else "stage2",
             "stage3",
             "stage4",
         ]
-    assert calls == expected * 2
+        assert [call for call in calls if call != "tle"] == stages * 2
+
+
+@pytest.mark.moe_align_block_size_triton
+@pytest.mark.parametrize(
+    "missing",
+    [
+        None,
+        "device_mesh",
+        "distributed_barrier",
+        "gpu",
+        "gpu.alloc",
+        "gpu.local_ptr",
+        "gpu.smem",
+    ],
+)
+def test_moe_align_tle_required_apis(monkeypatch, missing):
+    module = importlib.import_module("flaggems_vllm.ops.moe_align_block_size")
+    version_utils = importlib.import_module("flaggems_vllm.utils.triton_version_utils")
+    experimental = importlib.import_module("triton.experimental")
+
+    def api(*args, **kwargs):
+        raise AssertionError("capability check must not execute a TLE API")
+
+    language = SimpleNamespace(
+        device_mesh=api,
+        distributed_barrier=api,
+        gpu=SimpleNamespace(alloc=api, local_ptr=api, smem=object()),
+    )
+    if missing:
+        owner, _, attr = missing.rpartition(".")
+        delattr(language.gpu if owner else language, attr)
+    package = SimpleNamespace(language=language)
+    monkeypatch.setattr(experimental, "tle", package, raising=False)
+    monkeypatch.setitem(sys.modules, "triton.experimental.tle", package)
+    monkeypatch.setitem(sys.modules, "triton.experimental.tle.language", language)
+    monkeypatch.setattr(version_utils, "_triton_version_at_least", lambda *args: True)
+    assert module.has_triton_tle_attrs(module._TLE_REQUIRED_APIS, 3, 6, 0) is (
+        missing is None
+    )
+
+
+@pytest.mark.moe_align_block_size_triton
+@pytest.mark.parametrize(
+    "cluster_available,error,cluster_calls",
+    [
+        (False, None, 0),
+        (True, None, 2),
+        (True, "unsupported TLE feature: tle.remote", 1),
+        (True, "ordinary compilation failure", 2),
+    ],
+)
+def test_moe_align_cluster_capability_is_independent(
+    monkeypatch, cluster_available, error, cluster_calls
+):
+    module = importlib.import_module("flaggems_vllm.ops.moe_align_block_size")
+    calls = []
+
+    class Kernel:
+        def __init__(self, name):
+            self.name = name
+
+        def __getitem__(self, grid):
+            def launch(*args, **kwargs):
+                calls.append(self.name)
+                if self.name == "cluster" and error:
+                    raise RuntimeError(error)
+
+            return launch
+
+    monkeypatch.setattr(module, "HAS_TLE", True)
+    monkeypatch.setattr(module, "HAS_TLE_CLUSTER", cluster_available)
+    monkeypatch.setattr(module, "_TLE_UNSUPPORTED_DEVICES", set())
+    monkeypatch.setattr(module, "_TLE_CLUSTER_UNSUPPORTED_DEVICES", set())
+    monkeypatch.setattr(module, "_supports_tle_cluster_remote", lambda: True)
+    monkeypatch.setattr(module, "_block_mesh", lambda _: None)
+    monkeypatch.setattr(module, "_block_cluster_mesh_8", lambda: None)
+    monkeypatch.setattr(module, "_pick_tle_atomic_fused_num_blocks", lambda *args: 1)
+    monkeypatch.setattr(module.torch, "zeros", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        module, "moe_align_block_size_tle_cluster_fused", Kernel("cluster")
+    )
+    monkeypatch.setattr(
+        module, "moe_align_block_size_tle_atomic_fused_coop", Kernel("atomic")
+    )
+    topk = SimpleNamespace(
+        numel=lambda: 1280, shape=(128, 10), ndim=2, is_cuda=True, device="cuda:0"
+    )
+    sorted_ids = SimpleNamespace(numel=lambda: 8960)
+    expert_ids = SimpleNamespace(numel=lambda: 560)
+    for _ in range(2):
+        module.moe_align_block_size_triton(topk, 512, 16, sorted_ids, expert_ids, None)
+    assert calls.count("cluster") == cluster_calls
+    assert calls.count("atomic") == (0 if cluster_available and error is None else 2)
+    assert not module._TLE_UNSUPPORTED_DEVICES
 
 
 @pytest.mark.moe_align_block_size_triton
