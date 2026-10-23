@@ -238,6 +238,7 @@ def _thead_moe_reference(x, w1, w2, weights, ids):
     return result.to(x.dtype)
 
 
+@pytest.mark.fused_moe
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("m", [0, 1, 8, 12, 13, 64, 128, 256])
 @pytest.mark.parametrize("padded", [False, True])
@@ -268,6 +269,7 @@ def test_thead_fused_moe_original_weight_layout(
     torch.testing.assert_close(actual.cpu(), expected, rtol=0.05, atol=0.01)
 
 
+@pytest.mark.fused_moe
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_thead_fused_moe_weight_reuse_and_update(thead_moe_original_layout, dtype):
     torch.manual_seed(68)
@@ -289,6 +291,7 @@ def test_thead_fused_moe_weight_reuse_and_update(thead_moe_original_layout, dtyp
     torch.testing.assert_close(actual.cpu(), expected, rtol=0.05, atol=0.01)
 
 
+@pytest.mark.fused_moe
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("m,hidden", [(1, 128), (8, 1024), (13, 128), (64, 128)])
 @pytest.mark.parametrize("padded", [False, True])
