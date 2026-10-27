@@ -231,19 +231,9 @@ def _is_qwen_tp2_moe_shape(
     topk: int,
     dtype: str | None,
     gemm_stage: str,
-    block_shape: list[int] | None = None,
-    use_int8_w8a8: bool = False,
 ) -> bool:
     if dtype not in _PLAIN_HALF_CONFIG_DTYPES:
         return False
-    if E == 128 and topk == 8:
-        return (
-            (gemm_stage, N, K) in (("gemm1", 768, 2048), ("gemm2", 2048, 384))
-            and block_shape is None
-            and not use_int8_w8a8
-            and _get_device_name() == "MetaX_C550"
-            and not bool(int(os.getenv("VLLM_BATCH_INVARIANT", "0")))
-        )
     if E == 256 and topk == 8:
         if gemm_stage == "gemm1":
             return (N, K) == (512, 2048)
@@ -255,46 +245,12 @@ def _qwen_tp2_config(
     M: int,
     gemm_stage: str,
     enable_gemm_fast_path: bool = False,
-    *,
-    E: int = 256,
 ) -> dict[str, Any]:
-    """Retained C550 TP2 configs for matching E128 and E256 MoE geometries.
+    """MC550 autotuned configs for Qwen3.6 MoE at TP2 (per-rank intermediate 256).
 
     Separate from _is_qwen_moe_shape because the shared body's M-keyed overrides
     (num_warps=4 at M=4096/8192/16384) are a large regression on these shapes.
     """
-    if E == 128:
-        # Both stages share one token alignment and must use the same block M.
-        if M <= 7:
-            block_m, block_n, block_k = 16, 128, 64
-            group_m, num_warps, num_stages = 1, 4, 1
-        elif M <= 64:
-            block_m, block_n, block_k = 16, 64, 128
-            group_m, num_warps = 1, 4
-            num_stages = 3 if gemm_stage == "gemm1" else 1
-        elif M <= 544:
-            block_m, block_n, block_k = 16, 128, 32
-            group_m, num_warps, num_stages = 4, 2, 3
-        else:
-            block_m, block_n, block_k = 128, 128, 64
-            group_m, num_warps, num_stages = 1, 4, 1
-            if gemm_stage == "gemm1":
-                if 4096 <= M <= 8192:
-                    num_warps = 8
-                elif M >= 8193:
-                    group_m = 8
-            elif M >= 4209:
-                group_m = 8
-        # Preserve nearest-M selection, including ties at 544 and 4208.
-        return {
-            "BLOCK_SIZE_M": block_m,
-            "BLOCK_SIZE_N": block_n,
-            "BLOCK_SIZE_K": block_k,
-            "GROUP_SIZE_M": group_m,
-            "num_warps": num_warps,
-            "num_stages": num_stages,
-        }
-
     is_gemm1 = gemm_stage == "gemm1"
 
     if M <= 8:
@@ -388,6 +344,62 @@ def _is_qwen_moe_shape(
     return False
 
 
+def _is_qwenvl_tp2_moe_shape(
+    E: int,
+    N: int,
+    K: int,
+    topk: int,
+    dtype: str | None,
+    gemm_stage: str,
+    block_shape: list[int] | None = None,
+    use_int8_w8a8: bool = False,
+) -> bool:
+    return (
+        dtype in _PLAIN_HALF_CONFIG_DTYPES
+        and E == 128
+        and topk == 8
+        and (gemm_stage, N, K) in (("gemm1", 768, 2048), ("gemm2", 2048, 384))
+        and block_shape is None
+        and not use_int8_w8a8
+        and _get_device_name() == "MetaX_C550"
+        and not bool(int(os.getenv("VLLM_BATCH_INVARIANT", "0")))
+    )
+
+
+def _qwenvl_tp2_config(M: int, gemm_stage: str) -> dict[str, Any]:
+    """Retained C550 TP2 configs for the matching Qwen-VL E128 geometry."""
+    # Both stages share one token alignment and must use the same block M.
+    if M <= 7:
+        block_m, block_n, block_k = 16, 128, 64
+        group_m, num_warps, num_stages = 1, 4, 1
+    elif M <= 64:
+        block_m, block_n, block_k = 16, 64, 128
+        group_m, num_warps = 1, 4
+        num_stages = 3 if gemm_stage == "gemm1" else 1
+    elif M <= 544:
+        block_m, block_n, block_k = 16, 128, 32
+        group_m, num_warps, num_stages = 4, 2, 3
+    else:
+        block_m, block_n, block_k = 128, 128, 64
+        group_m, num_warps, num_stages = 1, 4, 1
+        if gemm_stage == "gemm1":
+            if 4096 <= M <= 8192:
+                num_warps = 8
+            elif M >= 8193:
+                group_m = 8
+        elif M >= 4209:
+            group_m = 8
+    # Preserve nearest-M selection, including ties at 544 and 4208.
+    return {
+        "BLOCK_SIZE_M": block_m,
+        "BLOCK_SIZE_N": block_n,
+        "BLOCK_SIZE_K": block_k,
+        "GROUP_SIZE_M": group_m,
+        "num_warps": num_warps,
+        "num_stages": num_stages,
+    }
+
+
 def get_default_config(
     M: int,
     E: int,
@@ -400,7 +412,7 @@ def get_default_config(
     enable_gemm_fast_path: bool = False,
     use_int8_w8a8: bool = False,
 ) -> dict[str, Any]:
-    if _is_qwen_tp2_moe_shape(
+    if _is_qwenvl_tp2_moe_shape(
         E,
         N,
         K,
@@ -410,7 +422,10 @@ def get_default_config(
         block_shape=block_shape,
         use_int8_w8a8=use_int8_w8a8,
     ):
-        return _qwen_tp2_config(M, gemm_stage, enable_gemm_fast_path, E=E)
+        return _qwenvl_tp2_config(M, gemm_stage)
+
+    if _is_qwen_tp2_moe_shape(E, N, K, topk, dtype, gemm_stage):
+        return _qwen_tp2_config(M, gemm_stage, enable_gemm_fast_path)
 
     if not _is_qwen_moe_shape(E, N, K, topk, dtype, gemm_stage):
         return _generic_get_default_config(
