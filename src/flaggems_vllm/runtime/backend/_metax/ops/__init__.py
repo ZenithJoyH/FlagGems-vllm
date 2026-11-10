@@ -59,11 +59,15 @@ from flaggems_vllm.runtime.backend._metax.ops.moe_align_block_size import (
 )
 from flaggems_vllm.runtime.backend._metax.ops.mqa_logits import mqa_logits
 from flaggems_vllm.runtime.backend._metax.ops.paged_mqa_logits import paged_mqa_logits
+from flaggems_vllm.runtime.backend._metax.ops.top_k_per_row_decode import (
+    top_k_per_row_decode,
+)
 from flaggems_vllm.runtime.backend._metax.ops.top_k_per_row_prefill import (
     top_k_per_row_prefill,
 )
 
 __all__ = [
+    "top_k_per_row_decode",
     "paged_mqa_logits",
     "mqa_logits",
     "mhc_pre",
