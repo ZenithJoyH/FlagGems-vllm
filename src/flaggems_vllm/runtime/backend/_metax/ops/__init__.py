@@ -59,6 +59,12 @@ from flaggems_vllm.runtime.backend._metax.ops.moe_align_block_size import (
 )
 from flaggems_vllm.runtime.backend._metax.ops.mqa_logits import mqa_logits
 from flaggems_vllm.runtime.backend._metax.ops.paged_mqa_logits import paged_mqa_logits
+from flaggems_vllm.runtime.backend._metax.ops.sparse_mla_decode import (
+    flash_mla_with_kvcache,
+)
+from flaggems_vllm.runtime.backend._metax.ops.sparse_mla_prefill import (
+    flash_mla_sparse_fwd,
+)
 from flaggems_vllm.runtime.backend._metax.ops.top_k_per_row_decode import (
     top_k_per_row_decode,
 )
@@ -67,6 +73,8 @@ from flaggems_vllm.runtime.backend._metax.ops.top_k_per_row_prefill import (
 )
 
 __all__ = [
+    "flash_mla_sparse_fwd",
+    "flash_mla_with_kvcache",
     "top_k_per_row_decode",
     "paged_mqa_logits",
     "mqa_logits",
