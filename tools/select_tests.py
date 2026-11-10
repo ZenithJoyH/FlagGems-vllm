@@ -96,10 +96,12 @@ EXPLICIT_SOURCE_TO_TESTS = {
         "tests/test_top_k_per_row_decode_metax.py"
     ],
     "src/flaggems_vllm/runtime/backend/_metax/ops/paged_mqa_logits.py": [
-        "tests/test_mqa_logits.py"
+        "tests/test_mqa_logits.py",
+        "benchmark/test_mqa_logits.py",
     ],
     "src/flaggems_vllm/runtime/backend/_metax/ops/mqa_logits.py": [
-        "tests/test_mqa_logits.py"
+        "tests/test_mqa_logits.py",
+        "benchmark/test_mqa_logits.py",
     ],
     "src/flaggems_vllm/runtime/backend/_metax/ops/mhc_pre.py": [
         "tests/test_mhc_pre_metax.py",
