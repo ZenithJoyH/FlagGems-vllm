@@ -237,3 +237,24 @@ scaled_int8_quant_dynamic_main_tail:
     num_stages: 1
 
 # Shared BF16 MQA: one config avoids online benchmarking; GPU graph checks pending.
+
+mqa_logits_into:
+  - META: {BLOCK_M: 64, BLOCK_N: 64, HEAD_BLOCK: 1}
+    num_warps: 4
+    num_stages: 1
+
+mqa_logits_into_row_shard:
+  - META: {BLOCK_M: 32, BLOCK_N: 64, HEAD_BLOCK: 1}
+    num_warps: 4
+    num_stages: 1
+
+# Lossless E4M3 -> BF16 within the shared kernel, without native FP8 MMA.
+
+fp8_mqa_logits:
+  - META:
+      BLOCK_M: 16
+      BLOCK_N: 16
+      HEAD_BLOCK: 1
+      CAST_FP8_TO_BF16: true
+    num_warps: 4
+    num_stages: 1

@@ -85,6 +85,12 @@ FULL_BENCHMARK_TRIGGER_FILES = {
 # Some existing tests do not follow the source-stem naming convention, so keep
 # a small explicit map here to avoid missing those tests.
 EXPLICIT_SOURCE_TO_TESTS = {
+    "src/flaggems_vllm/runtime/backend/_metax/ops/paged_mqa_logits.py": [
+        "tests/test_mqa_logits.py"
+    ],
+    "src/flaggems_vllm/runtime/backend/_metax/ops/mqa_logits.py": [
+        "tests/test_mqa_logits.py"
+    ],
     "src/flaggems_vllm/runtime/backend/_metax/ops/mhc_pre.py": [
         "tests/test_mhc_pre_metax.py"
     ],
