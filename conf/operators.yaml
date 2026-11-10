@@ -23,6 +23,7 @@ ops:
       - Quantization
     stages:
       - beta: '5.3'
+
   - id: add_rms_norm
     description: |
       Add two inputs element-wise and apply Root Mean Square Layer Normalization.
@@ -36,6 +37,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: apply_repetition_penalties
     description: |
       Modifies logit tensors in place to penalize tokens that have already appeared in the generated sequence.
@@ -48,6 +50,7 @@ ops:
       - NeuralNetwork
     stages:
       - stable: '5.0'
+
   - id: apply_rotary_pos_emb
     description: |
       A method to incorporate positional information into the Transformer architecture.
@@ -61,6 +64,7 @@ ops:
       - NeuralNetwork
     stages:
       - stable: '2.0'
+
   - id: beam_search_score
     description: Computes beam search scores by adding cumulative log probabilities
       with new token scores.
@@ -73,6 +77,7 @@ ops:
       - Math
     stages:
       - alpha: '5.4'
+
   - id: beam_search_score_
     description: In-place version of beam search score computation.
     for:
@@ -84,6 +89,7 @@ ops:
       - Math
     stages:
       - alpha: '5.4'
+
   - id: bf16_paged_mqa_logits
     description: |
       Compute multi-head weighted ReLU attention logits on paged BF16 KV cache.
@@ -98,6 +104,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: bincount
     description: Count the frequency of each value in an array of non-negative integers.
     for:
@@ -110,6 +117,7 @@ ops:
       - Reduction
     stages:
       - stable: '5.0'
+
   - id: bmm_w8a8
     description: Channel-wise scaled signed INT8 batched matrix multiplication on PPU.
     for:
@@ -121,6 +129,7 @@ ops:
       - BLAS
     stages:
       - alpha: '5.5'
+
   - id: bucket_sort_topk
     description: A wrapper of the TLE version and the Triton version bucket-sort topk
       operation.
@@ -133,6 +142,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: causal_conv1d_fn
     description: |
       Causal depthwise conv1d over variable-length token sequences with
@@ -147,6 +157,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: causal_conv1d_update
     description: |
       Decode-stage causal conv1d with in-place convolution state update for
@@ -160,6 +171,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: chunk_gated_delta_rule_fwd
     description: |
       The forward case for `ChunkGatedDeltaRuleFunction` with Flash Linear Attention (FLA).
@@ -173,6 +185,7 @@ ops:
     stages:
       - alpha: '5.0'
       - beta: '5.3'
+
   - id: chunk_kda
     description: |
       Inference-only implementation of chunk Kimi Delta Attention (KDA) with Flash Linear Attention (FLA).
@@ -185,6 +198,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: chunk_kda_fwd_intra_token_parallel
     description: |
       Forward-only token-parallel diagonal sub-blocks for Kimi Delta Attention.
@@ -198,6 +212,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: chunk_kda_scaled_dot_kkt_fwd
     description: Causal KDA KKT and QKT matrices from cumulative log2 gates.
     for:
@@ -206,6 +221,7 @@ ops:
     kind: [Attention]
     stages:
       - alpha: '5.4'
+
   - id: chunk_kda_with_fused_gate
     description: |
       KDA prefill with fused softplus gate and 64-token chunks; V-first final state and aliased value output.
@@ -218,6 +234,7 @@ ops:
       - Attention
     stages:
       - beta: '0.3'
+
   - id: combine_topk_swa_indices
     description: |
       Combines compressed top-k sparse attention indices with sliding-window attention indices
@@ -233,6 +250,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: compressor
     description: |
       Compressor operator of the Ascend sparse-attention indexer: projects the
@@ -250,6 +268,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: compute_global_topk_indices_and_lens
     description: |
       Converts local top-k sparse attention indices to global KV-cache indices and computes
@@ -265,6 +284,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: concat_and_cache_mla
     description: |
       Writes the latent and RoPE value into KV cache for Multi-head Latent Attention forward case.
@@ -277,6 +297,7 @@ ops:
       - Attention
     stages:
       - beta: '3.0'
+
   - id: cp_gather_indexer_k_quant_cache
     description: This is a fused operator that gathers FP8 K cache values and scales.
     for:
@@ -288,6 +309,7 @@ ops:
       - Quantization
     stages:
       - beta: '5.3'
+
   - id: cross_entropy_loss
     description: Computes the cross entropy loss between input logits and target.
     for:
@@ -300,6 +322,7 @@ ops:
     stages:
       - stable: '2.0'
       - removed: '3.0'
+
   - id: cutlass_scaled_mm
     description: Scaled matrix multiplication with per-tensor or per-token quantization
       scales.
@@ -312,6 +335,7 @@ ops:
       - LinearAlg
     stages:
       - beta: '5.0'
+
   - id: dequantize_and_gather_k_cache
     description: |
       Dequantizes FP8 K-cache entries and gathers them into a BF16 tensor for DeepSeekV4 attention.
@@ -326,6 +350,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: dgeglu
     description: |
       Gaussian Error Gated Linear Unit with GELU activation instead of sigmoid function.
@@ -341,6 +366,7 @@ ops:
       - alpha: '4.2'
       - beta: '5.0'
       - stable: '5.0'
+
   - id: dispatch_fused_moe_kernel
     description: |
       Accelerates neural network training by combining token routing (dispatch/all-to-all communication),
@@ -356,6 +382,7 @@ ops:
     stages:
       - beta: '5.0'
       - stable: '5.3'
+
   - id: dreglu
     description: |
       Rectified Gated Linear Unit is a variant of GLU that uses ReLU instead of
@@ -370,6 +397,7 @@ ops:
     stages:
       - alpha: '4.2'
       - beta: '5.3'
+
   - id: dswiglu
     description: |
       Swish-Gated Linear Unit, a variant of GLU with the Swish activation function.
@@ -384,6 +412,7 @@ ops:
     stages:
       - alpha: '5.0'
       - beta: '5.3'
+
   - id: expand_pools_and_append_tail
     description: Expand identity-mapped history pools and append an incomplete token tail.
     for:
@@ -395,6 +424,7 @@ ops:
       - Indexing
     stages:
       - beta: '0.3'
+
   - id: flash_attention_forward
     description: Forward pass of FlashAttention computing scaled dot-product attention.
     for:
@@ -406,6 +436,7 @@ ops:
       - NeuralNetwork
     stages:
       - stable: '3.0'
+
   - id: flash_attn_varlen_func
     description: |
       Compute attention for sequences of variable lengths within a single batch.
@@ -421,6 +452,7 @@ ops:
     stages:
       - stable: '3.1'
     cpp: '4.0'
+
   - id: flash_attn_varlen_func_w8a8
     description: |
       W8A8 variable-length FlashAttention-2 with FP16/BF16 output. Precisions:
@@ -440,6 +472,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: flash_attn_varlen_opt_func
     description: A variant of `flash_attn_varlen_func` that has `lse` as an optional
       parameter.
@@ -453,6 +486,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: flash_mla
     description: A variant of Multi-head Latent Attention (MLA).
     for:
@@ -465,6 +499,7 @@ ops:
       - NeuralNetwork
     stages:
       - stable: '3.0'
+
   - id: flash_mla_sparse_fwd
     description: Part of the FlashMLA.
     for:
@@ -477,6 +512,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.3'
+
   - id: flash_mla_with_kvcache
     description: Dense and sparse Multi-head Latent Attention decoding with a paged
       KV cache.
@@ -490,6 +526,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: flash_mla_with_kvcache_w8a8
     description: |
       Dense MLA decode with a per-token-scaled 8-bit CKV cache and backend-specific implementations.
@@ -502,6 +539,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: fp8_einsum
     description: |
       Block-scaled bhr,hdr->bhd contraction. Precisions: FP8 (NVIDIA Hopper,
@@ -518,6 +556,7 @@ ops:
       - Quantization
     stages:
       - alpha: '5.4'
+
   - id: fp8_fp4_mqa_logits
     description: |
       Compute weighted MQA logits with FP8 quantized Q and K tensors.
@@ -533,6 +572,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.1'
+
   - id: fp8_fp4_paged_mqa_logits
     description: |
       Compute paged multi-query attention logits from FP8 queries against
@@ -549,6 +589,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: fused_add_rms_norm
     description: Add two inputs element-wise and apply Root Mean Square Layer Normalization.
     for:
@@ -561,6 +602,7 @@ ops:
     stages:
       - stable: '2.0'
     cpp: '4.0'
+
   - id: fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert
     description: |
       Horizontally-fused DeepseekV4-MLA.
@@ -576,6 +618,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: fused_experts_impl
     description: An implementation of fused MoE.
     for:
@@ -588,6 +631,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: fused_indexer_q_rope_quant
     description: |
       Applies RoPE to sparse indexer Q, quantizes it to FP8 or MXFP4, and folds
@@ -603,6 +647,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.4'
+
   - id: fused_indexer_weight_scale
     description: |
       Scale floating-point indexer weights by FP32 query scales and a scalar.
@@ -617,6 +662,7 @@ ops:
       - Math
     stages:
       - alpha: '5.4'
+
   - id: fused_inv_rope_fp8_quant
     description: |
       Apply inverse RoPE and group-wise quantization to attention output.
@@ -632,6 +678,7 @@ ops:
       - Quantization
     stages:
       - beta: '5.4'
+
   - id: fused_marlin_moe_w4a16
     description: |
       Fused mixture-of-experts computation with 4-bit weights and 16-bit
@@ -646,6 +693,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: fused_marlin_moe_w8a16
     description: |
       Fused mixture-of-experts computation with 8-bit weights and 16-bit
@@ -660,6 +708,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: fused_moe
     description: The generic interface for fused MoE.
     for:
@@ -672,6 +721,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: fused_q_kv_rmsnorm
     description: |
       Applies RMSNorm to Q and KV tensors in a single fused kernel for DeepSeekV4 attention.
@@ -686,6 +736,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: fused_recurrent_gated_delta_rule
     description: |
       Recurrent gated delta rule with [pool, HV, V, K] state, strided QKV,
@@ -701,6 +752,7 @@ ops:
     stages:
       - alpha: '5.0'
       - beta: '5.3'
+
   - id: fused_recurrent_gated_delta_rule_packed_decode
     description: vLLM 0.24.0 packed single-token gated delta rule decode.
     for:
@@ -711,6 +763,7 @@ ops:
       - FLA
     stages:
       - alpha: '5.4'
+
   - id: fused_recurrent_kda
     description: |
       Independent Triton KDA decode with key-wise gate decay, optional QK L2
@@ -725,6 +778,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: gate_sigmoid_mul
     description: Applies the sigmoid output gate to Kimi-K3 MLA attention output.
     for:
@@ -758,6 +812,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: geglu
     description: Gaussian Error Gated Linear Unit with GELU activation instead of
       sigmoid function.
@@ -772,6 +827,7 @@ ops:
     stages:
       - alpha: '4.2'
       - beta: '5.3'
+
   - id: gelu_and_mul
     description: An activation function for GeGLU.
     for:
@@ -784,6 +840,7 @@ ops:
       - NeuralNetwork
     stages:
       - stable: '2.0'
+
   - id: gemma_rms_norm
     description: |
       RMSNorm variant used by the Gemma model family. Unlike standard RMSNorm,
@@ -799,6 +856,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: group_list_cumsum
     description: |
       Computes expert token-count offsets (cumsum) for expert-parallel MoE
@@ -814,6 +872,7 @@ ops:
       - Reduction
     stages:
       - alpha: '5.4'
+
   - id: grouped_gemma_rmsnorm
     description: Grouped Gemma RMS normalization with shared or per-group affine weights.
     for:
@@ -826,6 +885,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '0.3'
+
   - id: grouped_topk
     description: |
       A specialized routing mechanism used in Mixture-of-Experts (MoE) models (like DeepSeek-V3/R1)
@@ -840,6 +900,7 @@ ops:
       - MoE
     stages:
       - stable: '5.0'
+
   - id: hc_combine
     description: Pure hyperconnection combine with optional FP32 sigmoid injection gating.
     for:
@@ -850,6 +911,7 @@ ops:
       - Pointwise
     stages:
       - beta: '0.3'
+
   - id: hc_head_fused_kernel
     description: |
       The head fusion kernel for MHC (Manifold-Constrained Hyper-Connections).
@@ -866,6 +928,7 @@ ops:
     stages:
       - beta: '5.2'
       - stable: '5.3'
+
   - id: hc_split_sinkhorn_forward
     description: |
       Computes a differentiable approximation of the Wasserstein distance (Optimal Transport)
@@ -878,6 +941,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: indexer_epilogue
     description: |
       Fused post-topk epilogue for the GLM lightning indexer: expands the
@@ -894,6 +958,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: indexer_gemm_score
     description: |
       GEMM-form scorer for the GLM lightning indexer: gathers each pool tile
@@ -910,6 +975,7 @@ ops:
       - LinearAlg
     stages:
       - alpha: '5.4'
+
   - id: indexer_k_quant_and_cache
     description: This is a fused operator that quantizes K tensors and writes them
       into the FP8 KV cache.
@@ -922,6 +988,7 @@ ops:
       - Quantization
     stages:
       - beta: '5.3'
+
   - id: inplace_fused_experts
     description: This operator writes output directly to `hidden_states`.
     for:
@@ -935,6 +1002,7 @@ ops:
     stages:
       - beta: '5.0'
       - stable: '5.3'
+
   - id: instance_norm
     description: |
       Apply Instance Normalization independently for each channel in every data sample within a batch.
@@ -948,6 +1016,7 @@ ops:
       - stable: '2.2'
       - removed: '3.0'
       - beta: '5.3'
+
   - id: kda_conv_gather
     description: |
       Stages the rows used by a batch out of the block-strided Kimi Delta
@@ -963,6 +1032,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: kda_conv_scatter
     description: |
       Restores the staged rows back into the block-strided KDA
@@ -977,6 +1047,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: kda_gate_cumsum
     description: |
       Fused Triton replacement for the AscendC kda_gate_cumsum operator:
@@ -992,6 +1063,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: kda_state_gather
     description: |
       Gathers KDA recurrent states from the paged cache into the [N, H, K, V]
@@ -1006,6 +1078,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: kda_state_scatter
     description: |
       Scatters the [N, H, K, V] KDA recurrent-state output of the AscendC
@@ -1020,6 +1093,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: kpool_state_compress
     description: |
       Fused fast path for the GLM5 Next A3 indexer pre-compress sequence:
@@ -1035,6 +1109,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: kv_rmsnorm_rope_cache
     description: |
       Fused KV RMSNorm + RoPE + paged-KV cache writeback: splits a fused KV
@@ -1052,6 +1127,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: lightning_indexer
     description: |
       TLE implementation of the Ascend paged-attention Lightning Indexer:
@@ -1069,6 +1145,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: mhc_bwd
     description: |
       The backward case for MHC (Manifold-Constrained Hyper-Connections).
@@ -1084,6 +1161,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: mhc_post
     description: Triton implementation of mHC Post operator (optimized v3).
     for:
@@ -1096,6 +1174,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: mhc_pre
     description: Triton implementation of mHC Pre operator (optimized v2).
     for:
@@ -1108,6 +1187,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: minimax_m3_sparse_attn
     description: |
       MiniMax M3 block-sparse GQA prefill attention over packed paged KV
@@ -1123,6 +1203,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: minimax_m3_sparse_attn_decode
     description: |
       MiniMax M3 block-sparse GQA decode attention; split-K over the selected
@@ -1138,6 +1219,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: moe_align_block_size_triton
     description: |
       Aligns the token distribution across experts to be compatible with block size
@@ -1153,6 +1235,7 @@ ops:
     stages:
       - beta: '4.0'
       - stable: '4.2'
+
   - id: moe_sum
     description: |
       An implementation of Mixture of Experts (MoE) with sum-based aggregation
@@ -1167,6 +1250,20 @@ ops:
       - MoE
     stages:
       - stable: '4.2'
+
+  - id: mqa_logits
+    description: Weighted MQA logits with explicit shared or per-query key storage
+    for:
+      - None
+    labels:
+      - fused
+      - vLLM
+      - MetaX
+    kind:
+      - NeuralNetwork
+    stages:
+      - alpha: '5.5'
+
   - id: mrope
     description: |
       Applies multi-modal rotary positional embeddings to query and key tensors,
@@ -1180,6 +1277,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: mul
     description: Multiplies `input` by `other`.
     for:
@@ -1191,6 +1289,7 @@ ops:
       - Math
     stages:
       - stable: '1.0'
+
   - id: mul_
     description: The in-place version of `mul()`.
     for:
@@ -1202,6 +1301,7 @@ ops:
       - Math
     stages:
       - stable: '2.2'
+
   - id: mv
     description: Performs a matrix-vector product of the matrix `input` and the vector
       `vec`.
@@ -1213,6 +1313,7 @@ ops:
       - BLAS
     stages:
       - stable: '2.0'
+
   - id: outer
     description: |
       Computes outer product of self and the input vector.
@@ -1226,6 +1327,7 @@ ops:
       - BLAS
     stages:
       - stable: '2.0'
+
   - id: outplace_fused_experts
     description: This operator allocates and returns a new output tensor.
     for:
@@ -1239,6 +1341,7 @@ ops:
     stages:
       - beta: '5.0'
       - stable: '5.3'
+
   - id: pack_seq_triton
     description: Pack variable-length token sequences into a padded batched tensor.
     for:
@@ -1251,6 +1354,20 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
+  - id: paged_mqa_logits
+    description: Paged MQA logits with common FP8 and MetaX BF16 query contracts
+    for:
+      - None
+    labels:
+      - fused
+      - vLLM
+      - MetaX
+    kind:
+      - NeuralNetwork
+    stages:
+      - alpha: '5.5'
+
   - id: paged_scatter_triton
     description: |
       Scatters token rows into paged caches by slot index in a single kernel,
@@ -1266,6 +1383,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: per_token_group_quant_fp8
     description: |
       Function to perform per-token-group quantization on an input tensor `x`.
@@ -1281,6 +1399,7 @@ ops:
     stages:
       - alpha: '4.2'
       - beta: '5.3'
+
   - id: persistent_topk
     description: |
       vLLM-compatible persistent topk decode. Triton implementation supporting
@@ -1296,6 +1415,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: reglu
     description: |
       Rectified Gated Linear Unit is a variant of GLU that uses ReLU instead of the sigmoid function for gating.
@@ -1309,6 +1429,7 @@ ops:
     stages:
       - alpha: '4.2'
       - beta: '5.3'
+
   - id: reshape_and_cache
     description: Store the key/value token states into the pre-allcated kv_cache buffers
       of paged attention.
@@ -1321,6 +1442,7 @@ ops:
       - Attention
     stages:
       - stable: '3.0'
+
   - id: reshape_and_cache_flash
     description: Store the key/value token states into the pre-allcated kv_cache buffers
       of paged attention.
@@ -1333,6 +1455,7 @@ ops:
     stages:
       - stable: '3.0'
     cpp: '4.0'
+
   - id: rwkv_ka_fusion
     description: |
       Merges, aligns, and enhances features from different data sources or spatial directions
@@ -1346,6 +1469,7 @@ ops:
     stages:
       - stable: '4.1'
     cpp: '4.0'
+
   - id: rwkv_mm_sparsity
     description: Optimized, lossless sparse matrix multiplication in RWKV-7 models.
     for:
@@ -1357,6 +1481,7 @@ ops:
     stages:
       - stable: '4.1'
     cpp: '4.0'
+
   - id: silu_and_mul
     description: A custom operator in vLLM as activation function for SwiGLU.
     for:
@@ -1369,6 +1494,7 @@ ops:
       - Activation
     stages:
       - stable: '2.0'
+
   - id: silu_and_mul_out
     description: A variant of `silu_and_mul` with an extra `out` argument.
     for:
@@ -1381,6 +1507,7 @@ ops:
       - Activation
     stages:
       - stable: '2.0'
+
   - id: silu_and_mul_with_clamp
     description: A custom operator in vLLM as activation function for SwiGLU.
     for:
@@ -1393,6 +1520,7 @@ ops:
       - Activation
     stages:
       - stable: '5.3'
+
   - id: silu_and_mul_with_clamp_out
     description: A variant of `silu_and_mul_with_clamp` with an extra `out` argument.
     for:
@@ -1405,6 +1533,7 @@ ops:
       - Activation
     stages:
       - stable: '5.3'
+
   - id: skip_layer_norm
     description: |
       An optimized operation used in Transformer models to improve performance
@@ -1419,6 +1548,7 @@ ops:
       - NeuralNetwork
     stages:
       - stable: '2.0'
+
   - id: slot_mapping_triton
     description: |
       Parallel slot-mapping computation for paged KV caches: parallelises over
@@ -1433,6 +1563,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: sparse_attn_sharedkv
     description: |
       DeepSeekV4 shared-KV sparse attention in three modes: SWA (sliding
@@ -1451,6 +1582,7 @@ ops:
       - Attention
     stages:
       - alpha: '5.4'
+
   - id: sparse_attn_triton
     description: Sparse attention with attention-sink.
     for:
@@ -1462,6 +1594,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: sparse_flash_attention
     description: |
       Ascend shared-KV MLA with the vLLM-Ascend SFA interface and tuple outputs.
@@ -1477,6 +1610,7 @@ ops:
       - DSA
     stages:
       - alpha: '0.1.0'
+
   - id: sparse_mla_fwd_interface
     description: |
       A generic interface for sparse MLA (Multi-head Latent Attention) for DeepSeek v3/v3.2.
@@ -1490,6 +1624,7 @@ ops:
     stages:
       - beta: '5.0'
       - stable: '5.3'
+
   - id: stage_deepseek_v4_mega_moe_inputs
     description: |
       Stages DeepSeekV4 Mega-MoE inputs by quantizing hidden states to FP8
@@ -1504,6 +1639,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: swiglu
     description: Swish-Gated Linear Unit, a variant of GLU with the Swish activation
       function.
@@ -1516,6 +1652,7 @@ ops:
       - NeuralNetwork
     stages:
       - stable: '5.0'
+
   - id: top_k_per_row_decode
     description: |
       Triton top-K per row for DeepSeek V4 decode-phase token selection.
@@ -1531,6 +1668,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: top_k_per_row_prefill
     description: |
       Triton top-K per row for DeepSeek V4 sparse attention prefill phase.
@@ -1544,6 +1682,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: top_k_top_p
     description: |
       Per-row top-k / top-p filtering of [batch, vocab] sampling logits: masked
@@ -1563,6 +1702,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.4'
+
   - id: topk_softmax
     description: |
       Selects the k most likely next-token candicates, sets all others to zero,
@@ -1576,6 +1716,7 @@ ops:
       - MoE
     stages:
       - stable: '4.0'
+
   - id: topk_softplus_sqrt
     description: |
       Fused softplus + sqrt + top-k selection and optional renormalization
@@ -1590,6 +1731,7 @@ ops:
       - MoE
     stages:
       - beta: '5.3'
+
   - id: triton_lighting_indexer_k_tiled_interface
     description: Part of FP8 MQA framework. It is currently not exposed as an operator
       for use.
@@ -1602,6 +1744,7 @@ ops:
       - NeuralNetwork
     stages:
       - alpha: '5.3'
+
   - id: unpack_seq_triton
     description: Unpack a packed sequence tensor back to its original variable-length
       form.
@@ -1615,6 +1758,7 @@ ops:
       - NeuralNetwork
     stages:
       - beta: '5.3'
+
   - id: w8a8_block_matmul
     description: Matrix multiplication with block-wise scaled INT8 or FP8 activations and weights.
     for:
@@ -1627,6 +1771,7 @@ ops:
     stages:
       - alpha: '5.5'
     cpp: '5.5'
+
   - id: weight_norm
     description: |
       Reparameterizes a module's weight tensor by decoupling its magnitude (g)
@@ -1640,6 +1785,7 @@ ops:
       - NeuralNetwork
     stages:
       - stable: '3.0'
+
   - id: weight_norm_interface
     description: |
       Apply weight normalization to neural network layers, decoupling the magnitued
@@ -1654,6 +1800,7 @@ ops:
       - NeuralNetwork
     stages:
       - stable: '2.2'
+
   - id: weight_norm_interface_backward
     description: |
       Computes the gradients for weight normalization during the backward pass.
@@ -1669,27 +1816,3 @@ ops:
       - NeuralNetwork
     stages:
       - stable: '3.0'
-  - id: mqa_logits
-    description: Weighted MQA logits with explicit shared or per-query key storage
-    for:
-      - None
-    labels:
-      - fused
-      - vLLM
-      - MetaX
-    kind:
-      - NeuralNetwork
-    stages:
-      - alpha: '5.5'
-  - id: paged_mqa_logits
-    description: Paged MQA logits with common FP8 and MetaX BF16 query contracts
-    for:
-      - None
-    labels:
-      - fused
-      - vLLM
-      - MetaX
-    kind:
-      - NeuralNetwork
-    stages:
-      - alpha: '5.5'
