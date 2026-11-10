@@ -113,3 +113,13 @@ def test_mhc_pre_nondefault_splits_preserves_common_warning():
     }
     for result, expected in zip(actual, mhc_pre_ref(**reference)):
         torch.testing.assert_close(result.cpu(), expected, rtol=1e-2, atol=1e-2)
+
+
+@pytest.fixture(autouse=True)
+def restore_mhc_test_rng_state():
+    # The upstream data helper deliberately seeds globally; contain that effect
+    # within each test rather than leaking it into another operator's tests.
+    cpu, gpu = torch.get_rng_state(), torch.cuda.get_rng_state()
+    yield
+    torch.set_rng_state(cpu)
+    torch.cuda.set_rng_state(gpu)
