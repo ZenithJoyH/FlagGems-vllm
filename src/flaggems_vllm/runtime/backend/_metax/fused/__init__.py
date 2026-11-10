@@ -12,13 +12,9 @@ from flaggems_vllm.runtime.backend._metax.fused.gdn_chunk import (
 from flaggems_vllm.runtime.backend._metax.fused.top_k_per_row_decode import (
     top_k_per_row_decode,
 )
-from flaggems_vllm.runtime.backend._metax.fused.top_k_per_row_prefill import (
-    top_k_per_row_prefill,
-)
 
 __all__ = [
     "fused_inv_rope_fp8_quant",
     "chunk_gated_delta_rule_fwd",
     "top_k_per_row_decode",
-    "top_k_per_row_prefill",
 ]
