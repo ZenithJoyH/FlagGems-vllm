@@ -11,6 +11,7 @@ import triton.language as tl
 from flaggems_vllm.runtime.backend._metax.fused.top_k_per_row_decode import (
     top_k_per_row_decode as _general_top_k_per_row_decode,
 )
+from flaggems_vllm.runtime.backend._metax.ops.flash_attention.common import fill_tensor
 
 logger = logging.getLogger(__name__)
 
@@ -160,12 +161,6 @@ def _decode_topk_tree(logits, valid_lens, out_indices, k=512, block=1024):
         raise TypeError("Invalid Top-k dtype/layout")
     if valid_lens.device != logits.device or out_indices.device != logits.device:
         raise ValueError("Top-k inputs must share a device")
-    if logits.shape[0] == 0:
-        return out_indices
-    if logits.shape[1] == 0:
-        out_indices[:, :k].fill_(-1)
-        return out_indices
-
     if not (logits.is_cuda and valid_lens.is_cuda and out_indices.is_cuda):
         raise ValueError(
             "Invalid operator argument: logits.is_cuda and valid_lens.is_cuda and out_indices.is_cuda"
@@ -174,17 +169,26 @@ def _decode_topk_tree(logits, valid_lens, out_indices, k=512, block=1024):
         raise ValueError("Invalid operator argument: logits.dtype == torch.float32")
     if not (out_indices.shape[1] >= k):
         raise ValueError("Invalid operator argument: out_indices.shape[1] >= k")
+    if logits.shape[0] == 0:
+        return out_indices
+    if logits.shape[1] == 0:
+        fill_tensor(out_indices[:, :k], -1)
+        return out_indices
+
     rows = logits.shape[0]
     nb_max = triton.cdiv(logits.shape[1], block)
     levels = _levels(nb_max)
     dev = logits.device
 
     vals_buf = [
-        torch.full((rows, lv * k), -float("inf"), dtype=torch.float32, device=dev)
+        fill_tensor(
+            torch.empty((rows, lv * k), dtype=torch.float32, device=dev), -float("inf")
+        )
         for lv in levels
     ]
     idx_buf = [
-        torch.full((rows, lv * k), -1, dtype=torch.int32, device=dev) for lv in levels
+        fill_tensor(torch.empty((rows, lv * k), dtype=torch.int32, device=dev), -1)
+        for lv in levels
     ]
 
     _row_local_topk[(nb_max, rows)](
