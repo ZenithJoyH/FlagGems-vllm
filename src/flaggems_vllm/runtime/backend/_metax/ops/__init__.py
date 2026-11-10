@@ -53,11 +53,15 @@ else:
 from flaggems_vllm.runtime.backend._metax.ops.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert import (
     fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert,
 )
+from flaggems_vllm.runtime.backend._metax.ops.moe_align_block_size import (
+    moe_align_block_size_no_tle,
+)
 from flaggems_vllm.runtime.backend._metax.ops.top_k_per_row_prefill import (
     top_k_per_row_prefill,
 )
 
 __all__ = [
+    "moe_align_block_size_no_tle",
     "top_k_per_row_prefill",
     "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert",
     "fused_experts_impl",
