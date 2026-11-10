@@ -102,7 +102,8 @@ EXPLICIT_SOURCE_TO_TESTS = {
         "tests/test_mqa_logits.py"
     ],
     "src/flaggems_vllm/runtime/backend/_metax/ops/mhc_pre.py": [
-        "tests/test_mhc_pre_metax.py"
+        "tests/test_mhc_pre_metax.py",
+        "benchmark/test_mhc_pre.py",
     ],
     "src/flaggems_vllm/runtime/backend/_metax/ops/top_k_per_row_prefill.py": [
         "tests/test_top_k_per_row_prefill_metax.py",
