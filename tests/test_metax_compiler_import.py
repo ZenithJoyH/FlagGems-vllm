@@ -27,7 +27,7 @@ assert compiler.metax.translate_llvmir_to_mcfatbin is before
 
 @pytest.mark.chunk_gated_delta_rule_fwd
 @pytest.mark.skipif(ops.vendor_name != "metax", reason="MetaX compiler contract")
-@pytest.mark.parametrize("tokens", [64, 128])
+@pytest.mark.parametrize("tokens", [64, 128, 192])
 def test_gdn_after_compiler_isolation_reference_and_graph(tokens):
     import torch
     import torch.nn.functional as functional
@@ -50,6 +50,11 @@ def test_gdn_after_compiler_isolation_reference_and_graph(tokens):
         torch.randn(1, tokens, 2, device="cuda", generator=generator)
     ).bfloat16()
     beta = torch.rand(1, tokens, 2, device="cuda", generator=generator).bfloat16()
+    cu = (
+        torch.tensor([0, 64, tokens], device="cuda", dtype=torch.int32)
+        if tokens == 192
+        else None
+    )
     result = []
 
     def call():
@@ -62,14 +67,18 @@ def test_gdn_after_compiler_isolation_reference_and_graph(tokens):
             scale=64**-0.5,
             initial_state=None,
             output_final_state=False,
-            cu_seqlens=None,
+            cu_seqlens=cu,
         )
         result[:] = [values[1]]
 
     def check():
-        expected, _ = naive_chunk_gated_delta_rule_fwd(
-            q.cpu(), k.cpu(), v.cpu(), g.cpu(), beta.cpu(), 64**-0.5, None
-        )
+        segments = [(0, 64), (64, tokens)] if cu is not None else [(0, tokens)]
+        pieces = []
+        for start, end in segments:
+            values = [value[:, start:end].cpu() for value in (q, k, v, g, beta)]
+            expected, _ = naive_chunk_gated_delta_rule_fwd(*values, 64**-0.5, None)
+            pieces.append(expected)
+        expected = torch.cat(pieces, dim=1)
         # The bounded normalized-input case admits a stricter BF16 check than
         # the upstream unnormalized recurrence stress cases.
         torch.testing.assert_close(
