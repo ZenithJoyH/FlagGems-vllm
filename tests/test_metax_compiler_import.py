@@ -147,3 +147,29 @@ def test_gdn_tle_load_capability_guard(monkeypatch):
     assert not gdn._supports_tle_load()
     monkeypatch.delattr(tle, "get_supported_primitives")
     assert not gdn._supports_tle_load()
+
+
+@pytest.mark.chunk_gated_delta_rule_fwd
+@pytest.mark.skipif(ops.vendor_name != "metax", reason="MetaX metadata contract")
+@pytest.mark.parametrize(
+    "offsets,expected",
+    [
+        ([0, 7], 0),
+        ([0, 0, 0], 0),
+        ([0, 4, 8], 0),
+        ([0, 2, 5], 1),
+        ([0, 1, 5], 2),
+        ([0, 1, 2, 3, 20], 3),
+    ],
+)
+def test_skew_bucket_uses_cached_host_integer_metadata(offsets, expected):
+    import importlib
+
+    import torch
+
+    gdn = importlib.import_module(
+        "flaggems_vllm.runtime.backend._metax.fused.gdn_chunk"
+    )
+    values = torch.tensor(offsets, device="cuda", dtype=torch.int64)
+    assert gdn._skew_bucket_cached(values) == expected
+    assert gdn._skew_bucket_cached(values) == expected
